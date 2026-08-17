@@ -1,0 +1,26 @@
+[project]
+name = "sharp-tracker"
+version = "0.1.0"
+description = "Listen to NMEA position data, log fixes, and display a Streamlit tracker map."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "folium>=0.17",
+    "pandas>=2.2",
+    "psycopg[binary]>=3.2",
+    "pydantic>=1.10",
+    "pynmea2>=1.19",
+    "requests>=2.32",
+    "sqlalchemy>=2.0",
+    "streamlit>=1.37",
+    "streamlit-folium>=0.22",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+sharp-tracker-collector = "sharp_tracker.collector:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
