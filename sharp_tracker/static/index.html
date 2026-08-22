@@ -32,6 +32,12 @@
     font: 600 10px system-ui, sans-serif; color: #78350f;
     text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
   }
+  .wp-marker .wp-tip {
+    display: none; position: absolute; left: 10px; top: 10px; white-space: nowrap;
+    background: rgba(255,255,255,0.95); border: 1px solid #d97706; border-radius: 4px;
+    padding: 2px 6px; font: 11px system-ui, sans-serif; color: #1f2937; z-index: 20;
+  }
+  .wp-marker:hover .wp-tip { display: block; }
   #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; }
   #dot.live { background: #16a34a; }
   #dot.stale { background: #dc2626; }
@@ -71,7 +77,7 @@ const SOURCES = {
     attribution: "NOAA Office of Coast Survey",
   },
   esri: {
-    tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}"],
+    tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{x}/{y}"],
     attribution: "Esri, Garmin, GEBCO, NOAA NGDC",
   },
   osm: {
@@ -230,7 +236,10 @@ function applyPosition(p) {
 function wpMarker(w) {
   const el = document.createElement("div");
   el.className = "wp-marker";
-  el.innerHTML = '<span class="wp-dot"></span><span class="wp-label">' + w.station + "</span>";
+  // Hover tooltip shows the exact plotted coordinates so a dot's position can
+  // be checked against the chart graticule.
+  el.innerHTML = '<span class="wp-dot"></span><span class="wp-label">' + w.station + "</span>" +
+    '<span class="wp-tip">' + w.station + " &mdash; " + w.lat.toFixed(4) + "\u00b0, " + w.lon.toFixed(4) + "\u00b0</span>";
   return new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([w.lon, w.lat]);
 }
 
