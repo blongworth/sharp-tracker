@@ -45,6 +45,20 @@ Optional host/port overrides:
 uv run sharp-tracker --host 0.0.0.0 --port 8501
 ```
 
+## Live map (push-based, no page refreshes)
+
+The live map is a single MapLibre page served by FastAPI and updated over
+Server-Sent Events — no full page reloads, so it stays smooth indefinitely:
+
+```bash
+uv run sharp-tracker-live          # http://127.0.0.1:8090
+```
+
+Endpoints: `GET /` (map), `GET /track` (SSE stream, `LIVE_REFRESH_SECONDS`,
+default 10s), `GET /api/positions?window_hours=6` (initial track window).
+Deploy as the `live` process on Railway alongside `ingest`.
+The Streamlit app remains the analysis view (time slider, filters, tables).
+
 ## Test the whole system locally
 
 Use four terminals.

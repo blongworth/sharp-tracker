@@ -21,16 +21,26 @@ def _fix_datetime(msg: Any) -> str | None:
     return None
 
 
-def parse_navigation(line: str) -> dict | None:
-    """Parse speed/course from navigation-only sentences such as VTG."""
+def parse_line(line: str, received_at: datetime | None = None) -> tuple[dict | None, dict | None]:
+    """Parse an NMEA sentence once.
+
+    Returns ``(navigation, position)`` where each is a normalized dict or
+    None. Navigation holds speed/course (VTG etc.); position holds a
+    position-bearing row (GGA/RMC etc.). Invalid lines yield ``(None, None)``.
+    """
     raw = line.strip()
     if not raw:
-        return None
+        return None, None
+
     try:
         msg = pynmea2.parse(raw)
     except pynmea2.ParseError:
-        return None
+        return None, None
 
+    return _extract_navigation(msg), _extract_position(msg, raw, received_at)
+
+
+def _extract_navigation(msg: Any) -> dict | None:
     speed_knots = _float_or_none(getattr(msg, "spd_over_grnd_kts", None))
     if speed_knots is None:
         speed_knots = _float_or_none(getattr(msg, "spd_over_grnd", None))
@@ -47,36 +57,19 @@ def parse_navigation(line: str) -> dict | None:
     return {"speed_knots": speed_knots, "course_deg": course_deg}
 
 
-def parse_position(line: str, received_at: datetime | None = None) -> dict | None:
-    """Parse a NMEA sentence and return a normalized position row, or None.
-
-    Supports common position-bearing sentences like GGA and RMC. Invalid or
-    non-position sentences are ignored.
-    """
-    raw = line.strip()
-    if not raw:
-        return None
-
+def _extract_position(msg: Any, raw: str, received_at: datetime | None) -> dict | None:
     received_at = received_at or datetime.now(timezone.utc)
-
-    try:
-        msg = pynmea2.parse(raw)
-    except pynmea2.ParseError:
-        return None
 
     lat = getattr(msg, "latitude", None)
     lon = getattr(msg, "longitude", None)
     if lat is None or lon is None or lat == 0 or lon == 0:
         return None
 
-    sentence_type = getattr(msg, "sentence_type", None)
-    talker = getattr(msg, "talker", None)
-
     return {
         "received_at": _iso_utc(received_at),
         "fix_time": _fix_datetime(msg),
-        "talker": talker,
-        "sentence_type": sentence_type,
+        "talker": getattr(msg, "talker", None),
+        "sentence_type": getattr(msg, "sentence_type", None),
         "latitude": float(lat),
         "longitude": float(lon),
         "altitude_m": _float_or_none(getattr(msg, "altitude", None)),

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SHARP Tracker — Live</title>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font-family: -apple-system, system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #hud {
+    position: absolute; top: 12px; right: 12px; z-index: 10;
+    background: rgba(255,255,255,0.94); border-radius: 8px; padding: 10px 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.25); font-size: 13px; line-height: 1.5; min-width: 190px;
+  }
+  #hud .row { display: flex; align-items: center; gap: 6px; }
+  #hud label { cursor: pointer; }
+  #hud select { flex: 1; }
+  #hud .metric { font-weight: 600; }
+  #hud .metric span { float: right; font-variant-numeric: tabular-nums; }
+  #hud .dim { color: #666; font-size: 11px; }
+  .ship-marker > div {
+    transform: translate(-12px, -12px) rotate(0deg);
+    width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65));
+  }
+  #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; }
+  #dot.live { background: #16a34a; }
+  #dot.stale { background: #dc2626; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="hud">
+  <div class="row">
+    <span id="dot"></span>
+    <span id="status" class="dim">connecting&hellip;</span>
+  </div>
+  <div class="row">
+    <select id="basemap">
+      <option value="noaa" selected>NOAA nautical charts</option>
+      <option value="esri">Esri Ocean</option>
+      <option value="osm">OpenStreetMap</option>
+    </select>
+  </div>
+  <div class="row"><label><input type="checkbox" id="seamarks" checked/> seamarks</label></div>
+  <div class="row"><label><input type="checkbox" id="follow" checked/> follow ship</label></div>
+  <hr style="border:none;border-top:1px solid #ddd;margin:8px 0"/>
+  <div class="metric">SOG <span id="sog">&mdash;</span></div>
+  <div class="metric">COG <span id="cog">&mdash;</span></div>
+  <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span></div>
+  <div class="dim" id="last-updated"></div>
+</div>
+<script>
+"use strict";
+
+const SOURCES = {
+  noaa: {
+    tiles: ["https://tileservice.charts.noaa.gov/tiles/50000_1/{z}/{x}/{y}.png"],
+    attribution: "NOAA Office of Coast Survey",
+  },
+  esri: {
+    tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}"],
+    attribution: "Esri, Garmin, GEBCO, NOAA NGDC",
+  },
+  osm: {
+    tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+    attribution: "OpenStreetMap contributors",
+  },
+};
+const SEAMARKS = {
+  tiles: ["https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png"],
+  attribution: "OpenSeaMap contributors",
+};
+const TRACK_LIMIT = 2000;
+
+function styleFor(base, seamarks) {
+  return {
+    version: 8,
+    sources: {
+      base: { type: "raster", tiles: SOURCES[base].tiles, attribution: SOURCES[base].attribution },
+      seamarks: { type: "raster", tiles: SEAMARKS.tiles, attribution: SEAMARKS.attribution },
+      track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
+    },
+    layers: [
+      { id: "base", type: "raster", source: "base" },
+      { id: "seamarks", type: "raster", source: "seamarks", layout: { visibility: seamarks ? "visible" : "none" } },
+      {
+        id: "track", type: "line", source: "track",
+        paint: { "line-color": "#ff4b4b", "line-width": 3, "line-opacity": 0.85 },
+      },
+    ],
+  };
+}
+
+let track = [];
+let ship = null;
+let initialized = false;
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: styleFor("noaa", true),
+  center: [-70.5, 43.5],   // NES-LTER domain default
+  zoom: 8,
+  attributionControl: { compact: true },
+});
+
+const shipEl = document.createElement("div");
+shipEl.className = "ship-marker";
+shipEl.innerHTML =
+  '<div id="ship-rotor">' +
+  '<svg width="24" height="24" viewBox="0 0 24 24" aria-label="ship">' +
+  '<path d="M12 1.8 L20.5 21.5 L12 17.2 L3.5 21.5 Z" fill="#e11d48" stroke="white" stroke-width="1.8"/>' +
+  '<path d="M12 5 L15.2 16.8 L12 15.2 L8.8 16.8 Z" fill="white" opacity="0.85"/>' +
+  "</svg></div>";
+
+function fmt(v, suffix, decimals) {
+  return v === null || v === undefined || Number.isNaN(v) ? "\u2014" : v.toFixed(decimals) + suffix;
+}
+
+function applyPosition(p) {
+  document.getElementById("sog").textContent = fmt(p.sog, " kn", 1);
+  document.getElementById("cog").textContent = fmt(p.cog, "\u00b0", 0);
+  if (p.t) {
+    const d = new Date(p.t);
+    document.getElementById("fix").textContent = d.toISOString().slice(5, 19) + " UTC";
+  }
+  document.getElementById("last-updated").textContent = "updated " + new Date().toLocaleTimeString();
+
+  if (!ship) {
+    ship = new maplibregl.Marker({ element: shipEl }).setLngLat([p.lon, p.lat]).addTo(map);
+    if (initialized && document.getElementById("follow").checked) {
+      map.easeTo({ center: [p.lon, p.lat], duration: 1500 });
+    }
+  } else {
+    ship.setLngLat([p.lon, p.lat]);
+    if (document.getElementById("follow").checked) {
+      map.easeTo({ center: [p.lon, p.lat], duration: 1500 });
+    }
+  }
+  const rotor = shipEl.querySelector("#ship-rotor");
+  rotor.style.transform = "translate(-12px, -12px) rotate(" + (p.cog || 0) + "deg)";
+
+  track.push([p.lon, p.lat]);
+  if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
+  map.getSource("track").setData({
+    type: "Feature", properties: {},
+    geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
+  });
+  if (!initialized) {
+    initialized = true;
+    if (document.getElementById("follow").checked) map.setZoom(12);
+  }
+}
+
+map.on("load", async () => {
+  const dot = document.getElementById("dot");
+  const status = document.getElementById("status");
+
+  try {
+    const res = await fetch("/api/positions?window_hours=6");
+    if (res.ok) {
+      const pts = await res.json();
+      for (const p of pts) {
+        track.push([p.lon, p.lat]);
+        applyPosition(p);
+      }
+      if (track.length) {
+        map.getSource("track").setData({
+          type: "Feature", properties: {},
+          geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
+        });
+        map.fitBounds(maplibregl.LngLatBounds(track).pad(0.2), { maxZoom: 12 });
+      }
+    }
+  } catch (e) { console.warn("initial window failed", e); }
+
+  const es = new EventSource("/track");
+  es.onopen = () => { dot.className = "live"; status.textContent = "live"; };
+  es.onerror = () => { dot.className = "stale"; status.textContent = "reconnecting\u2026"; };
+  es.onmessage = (e) => {
+    dot.className = "live";
+    status.textContent = "live";
+    try { applyPosition(JSON.parse(e.data)); } catch (err) { console.warn("bad message", err); }
+  };
+});
+
+document.getElementById("basemap").addEventListener("change", (e) => {
+  map.setStyle(styleFor(e.target.value, document.getElementById("seamarks").checked));
+});
+document.getElementById("seamarks").addEventListener("change", (e) => {
+  map.setLayoutProperty("seamarks", "visibility", e.target.checked ? "visible" : "none");
+});
+</script>
+</body>
+</html>

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from io import StringIO
-from math import atan2, cos, radians, sin, sqrt, degrees
+from math import atan2, cos, radians, sin, degrees
 
 import folium
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -54,12 +56,15 @@ def bearing_deg(from_lat: float, from_lon: float, to_lat: float, to_lon: float) 
     return (degrees(atan2(y, x)) + 360) % 360
 
 
-def approximate_distance_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    # Good enough for nearest-waypoint selection over the NES-LTER domain.
-    mean_lat = radians((lat1 + lat2) / 2)
-    dlat_nm = (lat2 - lat1) * 60
-    dlon_nm = (lon2 - lon1) * 60 * cos(mean_lat)
-    return sqrt(dlat_nm**2 + dlon_nm**2)
+def nearest_waypoint(waypoints: pd.DataFrame, lat: float, lon: float) -> pd.Series | None:
+    """Nearest waypoint, vectorized. Planar approximation is fine for NES-LTER."""
+    if waypoints.empty:
+        return None
+    mean_lat = np.radians((lat + waypoints["decimalLatitude"]) / 2)
+    dlat_nm = (waypoints["decimalLatitude"] - lat) * 60
+    dlon_nm = (waypoints["decimalLongitude"] - lon) * 60 * np.cos(mean_lat)
+    distances = (dlat_nm**2 + dlon_nm**2) ** 0.5
+    return waypoints.loc[distances.idxmin()]
 
 
 def ship_icon(course_deg: object) -> folium.DivIcon:
@@ -112,9 +117,16 @@ if "map_center_lon" not in st.session_state:
     st.session_state.map_center_lon = query_float("lon", float("nan"))
 
 
-def load_positions() -> pd.DataFrame:
+# Only read recent history: an unbounded full-table scan gets slow as the DB
+# grows. Override with DASHBOARD_WINDOW_HOURS (and the marker caps below).
+DATA_WINDOW_HOURS = float(os.getenv("DASHBOARD_WINDOW_HOURS", str(7 * 24)))
+MAX_TRACK_POINTS = int(os.getenv("MAX_TRACK_POINTS", "800"))
+MAX_MARKERS = int(os.getenv("MAX_MARKERS", "300"))
+
+
+def load_positions(since) -> pd.DataFrame:
     try:
-        return fetch_positions_df()
+        return fetch_positions_df(since=since)
     except Exception as exc:
         st.error(f"Could not read database {db_label()}: {exc}")
         return pd.DataFrame()
@@ -122,7 +134,8 @@ def load_positions() -> pd.DataFrame:
 
 @st.cache_data(ttl=5)
 def cached_positions() -> pd.DataFrame:
-    return load_positions()
+    since = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=DATA_WINDOW_HOURS)
+    return load_positions(since)
 
 
 @st.cache_data(ttl=3600)
@@ -137,19 +150,11 @@ def load_current_waypoints() -> pd.DataFrame:
     return waypoints.sort_values(["stationfullname", "station"])
 
 
-def nearest_waypoint(waypoints: pd.DataFrame, lat: float, lon: float) -> pd.Series | None:
-    if waypoints.empty:
-        return None
-    distances = waypoints.apply(
-        lambda row: approximate_distance_nm(lat, lon, row["decimalLatitude"], row["decimalLongitude"]),
-        axis=1,
-    )
-    return waypoints.loc[distances.idxmin()]
-
 
 with st.sidebar:
     st.header("Data")
     st.caption(f"Database: `{db_label()}`")
+    st.caption(f"Reading last {DATA_WINDOW_HOURS:g}h of fixes")
     auto_refresh = st.toggle("Auto-refresh every 10 seconds", value=True)
     if st.button("Refresh now"):
         st.cache_data.clear()
@@ -268,7 +273,16 @@ folium.TileLayer(
     show=show_seamarks,
 ).add_to(map_obj)
 
-coords = filtered[["latitude", "longitude"]].values.tolist()
+# Decimate heavy layers: the full window at 1 Hz can be tens of thousands of
+# points, which bloats the map JSON rebuilt on every refresh.
+track_points = filtered
+if len(track_points) > MAX_TRACK_POINTS:
+    track_points = track_points.iloc[:: len(track_points) // MAX_TRACK_POINTS]
+line_coords = track_points[["latitude", "longitude"]].values.tolist()
+
+shown_points = filtered
+if len(shown_points) > MAX_MARKERS:
+    shown_points = shown_points.iloc[:: len(shown_points) // MAX_MARKERS]
 
 if show_waypoints and not waypoints.empty:
     waypoint_group = folium.FeatureGroup(name="Current NES-LTER waypoints", show=True)
@@ -307,9 +321,11 @@ if show_waypoints and not waypoints.empty:
 # map component (which would otherwise reset the user's pan/zoom/baselayer).
 live_group = folium.FeatureGroup(name="Live track", show=True)
 
+latest_coords = (float(filtered["latitude"].iloc[-1]), float(filtered["longitude"].iloc[-1]))
+
 if reference_waypoint is not None:
     folium.PolyLine(
-        [[reference_waypoint["decimalLatitude"], reference_waypoint["decimalLongitude"]], coords[-1]],
+        [[reference_waypoint["decimalLatitude"], reference_waypoint["decimalLongitude"]], latest_coords],
         color="#f59e0b",
         weight=2,
         opacity=0.75,
@@ -317,30 +333,25 @@ if reference_waypoint is not None:
         tooltip=f"Reference waypoint: {reference_waypoint['station']}",
     ).add_to(live_group)
 
-if show_track and len(coords) > 1:
-    folium.PolyLine(coords, color="#ff4b4b", weight=3, opacity=0.85, tooltip="Track").add_to(live_group)
+if show_track and len(line_coords) > 1:
+    folium.PolyLine(line_coords, color="#ff4b4b", weight=3, opacity=0.85, tooltip="Track").add_to(live_group)
 
 if show_points:
-    for row in filtered.itertuples(index=False):
+    # Lightweight circles + tooltip only; per-point HTML popups make the
+    # serialized map far too heavy to rebuild every refresh.
+    for row in shown_points.itertuples(index=False):
         label = row.display_time.strftime("%Y-%m-%d %H:%M:%S UTC")
-        popup = folium.Popup(
-            f"<b>{label}</b><br>Lat: {row.latitude:.6f}<br>Lon: {row.longitude:.6f}<br>"
-            f"Speed: {row.speed_knots if pd.notna(row.speed_knots) else '—'} kn<br>"
-            f"Course: {row.course_deg if pd.notna(row.course_deg) else '—'}°",
-            max_width=300,
-        )
         folium.CircleMarker(
             [row.latitude, row.longitude],
             radius=4,
             color="#1f77b4",
             fill=True,
             fill_opacity=0.8,
-            popup=popup,
-            tooltip=label,
+            tooltip=f"{label} | SOG {format_value(row.speed_knots, ' kn')} | COG {format_value(row.course_deg, '°', decimals=0)}",
         ).add_to(live_group)
 
 folium.Marker(
-    coords[-1],
+    latest_coords,
     tooltip=f"Latest displayed position — COG {format_value(latest['course_deg'], '°', decimals=0)}, SOG {format_value(latest['speed_knots'], ' kn')}",
     popup=folium.Popup(
         f"<b>Latest displayed position</b><br>"
