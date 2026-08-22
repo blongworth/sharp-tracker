@@ -94,7 +94,7 @@ BASEMAPS = {
         "attr": "NOAA Office of Coast Survey",
     },
     "Esri Ocean Basemap": {
-        "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{x}/{y}",
+        "tiles": "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
         "attr": "Esri, Garmin, GEBCO, NOAA NGDC, and other contributors",
     },
     "OpenStreetMap": {"tiles": "OpenStreetMap", "attr": None},
