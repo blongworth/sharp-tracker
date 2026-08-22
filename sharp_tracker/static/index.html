@@ -22,16 +22,6 @@
   #hud .dim { color: #666; font-size: 11px; }
   .ship-marker { width: 20px; height: 20px; }
   .ship-marker svg { display: block; transform-origin: 50% 50%; transition: transform 0.8s linear; }
-  .wp-marker { position: relative; width: 8px; height: 8px; }
-  .wp-marker .wp-dot {
-    position: absolute; inset: 0; border-radius: 50%;
-    background: #f59e0b; border: 1.5px solid #fff; box-shadow: 0 0 2px rgba(0,0,0,0.5);
-  }
-  .wp-marker .wp-label {
-    position: absolute; left: 10px; top: -3px; white-space: nowrap;
-    font: 600 10px system-ui, sans-serif; color: #78350f;
-    text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 2px #fff;
-  }
   #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; }
   #dot.live { background: #16a34a; }
   #dot.stale { background: #dc2626; }
@@ -61,6 +51,7 @@
   <div class="metric">COG <span id="cog">&mdash;</span></div>
   <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span></div>
   <div class="dim" id="last-updated"></div>
+  <div class="dim" id="wp-hover" style="min-height:14px"></div>
 </div>
 <script>
 "use strict";
@@ -85,6 +76,23 @@ const SEAMARKS = {
 };
 const TRACK_LIMIT = 2000;
 
+// 1-degree reference grid over the NES-LTER region. Drawn in the same vector
+// pipeline as everything else, so any dot can be read against a known grid.
+function graticuleFeatures(kind) {
+  const out = { type: "FeatureCollection", features: [] };
+  for (let lon = -72; lon <= -69; lon++) {
+    out.features.push(kind === "lines"
+      ? { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[lon, 37.5], [lon, 43.5]] } }
+      : { type: "Feature", properties: { label: Math.abs(lon) + "\u00b0W" }, geometry: { type: "Point", coordinates: [lon, 43.35] } });
+  }
+  for (let lat = 38; lat <= 43; lat++) {
+    out.features.push(kind === "lines"
+      ? { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[-72.5, lat], [-68.5, lat]] } }
+      : { type: "Feature", properties: { label: lat + "\u00b0N" }, geometry: { type: "Point", coordinates: [-72.35, lat] } });
+  }
+  return out;
+}
+
 function styleFor(base, seamarks) {
   return {
     version: 8,
@@ -93,10 +101,26 @@ function styleFor(base, seamarks) {
       seamarks: { type: "raster", tiles: SEAMARKS.tiles, attribution: SEAMARKS.attribution },
       track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
       wp_track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
+      // Vector layers, not DOM markers: rasterized by the GPU in the same
+      // pipeline as the track, so the dots stay perfectly rigid against each
+      // other (DOM markers round each transform independently and shuffle in
+      // dense clusters while zooming).
+      waypoints: { type: "geojson", data: { type: "FeatureCollection", features: [] } },
+      graticule: { type: "geojson", data: graticuleFeatures("lines") },
+      graticule_labels: { type: "geojson", data: graticuleFeatures("labels") },
     },
     layers: [
       { id: "base", type: "raster", source: "base" },
       { id: "seamarks", type: "raster", source: "seamarks", layout: { visibility: seamarks ? "visible" : "none" } },
+      {
+        id: "graticule", type: "line", source: "graticule",
+        paint: { "line-color": "#64748b", "line-width": 0.75, "line-opacity": 0.5, "line-dasharray": [2, 2] },
+      },
+      {
+        id: "graticule_labels", type: "symbol", source: "graticule_labels",
+        layout: { "text-field": ["get", "label"], "text-size": 9, "text-anchor": "left" },
+        paint: { "text-color": "#475569", "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
+      },
       {
         id: "wp_track", type: "line", source: "wp_track",
         paint: { "line-color": "#f59e0b", "line-width": 2, "line-opacity": 0.75 },
@@ -106,6 +130,21 @@ function styleFor(base, seamarks) {
         id: "track", type: "line", source: "track",
         paint: { "line-color": "#ff4b4b", "line-width": 3, "line-opacity": 0.85 },
       },
+      {
+        id: "wp_dots", type: "circle", source: "waypoints",
+        paint: {
+          "circle-radius": 4, "circle-color": "#f59e0b",
+          "circle-stroke-color": "#ffffff", "circle-stroke-width": 1.5, "circle-stroke-opacity": 0.9,
+        },
+      },
+      {
+        id: "wp_labels", type: "symbol", source: "waypoints",
+        layout: {
+          "text-field": ["get", "station"], "text-size": 10,
+          "text-anchor": "left", "text-offset": [1.4, 0.2],
+        },
+        paint: { "text-color": "#78350f", "text-halo-color": "#ffffff", "text-halo-width": 2 },
+      },
     ],
   };
 }
@@ -113,11 +152,11 @@ function styleFor(base, seamarks) {
 let track = [];
 let ship = null;
 let waypoints = [];
-let wpMarkers = [];
 let nearestWp = null;
 let lastPos = null;
 let replaying = false;      // true while the initial position batch loads
 let followTarget = null;    // last point the camera centered on
+let hoverBound = false;
 
 const map = new maplibregl.Map({
   container: "map",
@@ -230,11 +269,29 @@ function applyPosition(p) {
   setWpTrack();
 }
 
-function wpMarker(w) {
-  const el = document.createElement("div");
-  el.className = "wp-marker";
-  el.innerHTML = '<span class="wp-dot"></span><span class="wp-label">' + w.station + "</span>";
-  return new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([w.lon, w.lat]);
+// Hover readout: show the exact coordinates of the waypoint under the cursor
+// so any dot's position can be checked against the graticule.
+function bindHover() {
+  if (hoverBound) return;
+  hoverBound = true;
+  const wpHover = document.getElementById("wp-hover");
+  map.on("mousemove", (e) => {
+    if (!map.getLayer("wp_dots")) return;
+    const hits = map.queryRenderedFeatures(e.point, { layers: ["wp_dots"] });
+    wpHover.textContent = hits.length
+      ? hits[0].properties.station + " \u2014 " + hits[0].geometry.coordinates[1].toFixed(4) + "\u00b0, " + hits[0].geometry.coordinates[0].toFixed(4) + "\u00b0"
+      : "";
+  });
+}
+
+// Apply HUD checkbox state to layer visibility (also after each style load,
+// since setStyle discards layout overrides).
+function applyLayerVisibility() {
+  const set = (id, on) => { try { map.setLayoutProperty(id, "visibility", on ? "visible" : "none"); } catch (e) {} };
+  set("seamarks", document.getElementById("seamarks").checked);
+  set("track", document.getElementById("track").checked);
+  set("wp_dots", document.getElementById("waypoints").checked);
+  set("wp_labels", document.getElementById("waypoints").checked);
 }
 
 map.on("load", async () => {
@@ -245,8 +302,13 @@ map.on("load", async () => {
     const wps = await (await fetch("/api/waypoints")).json();
     if (Array.isArray(wps)) {
       waypoints = wps;
-      wpMarkers = wps.map(wpMarker);
-      if (document.getElementById("waypoints").checked) wpMarkers.forEach((m) => m.addTo(map));
+      map.getSource("waypoints").setData({
+        type: "FeatureCollection",
+        features: wps.map((w) => ({
+          type: "Feature", properties: { station: w.station },
+          geometry: { type: "Point", coordinates: [w.lon, w.lat] },
+        })),
+      });
     }
   } catch (e) { console.warn("waypoints unavailable", e); }
 
@@ -272,6 +334,9 @@ map.on("load", async () => {
     }
   } catch (e) { console.warn("initial window failed", e); }
 
+  bindHover();
+  applyLayerVisibility();
+
   const es = new EventSource("/track");
   es.onopen = () => { dot.className = "live"; status.textContent = "live"; };
   es.onerror = () => { dot.className = "stale"; status.textContent = "reconnecting\u2026"; };
@@ -285,15 +350,9 @@ map.on("load", async () => {
 document.getElementById("basemap").addEventListener("change", (e) => {
   map.setStyle(styleFor(e.target.value, document.getElementById("seamarks").checked));
 });
-document.getElementById("seamarks").addEventListener("change", (e) => {
-  map.setLayoutProperty("seamarks", "visibility", e.target.checked ? "visible" : "none");
-});
-document.getElementById("track").addEventListener("change", (e) => {
-  map.setLayoutProperty("track", "visibility", e.target.checked ? "visible" : "none");
-});
-document.getElementById("waypoints").addEventListener("change", (e) => {
-  wpMarkers.forEach((m) => e.target.checked ? m.addTo(map) : m.remove());
-});
+document.getElementById("seamarks").addEventListener("change", applyLayerVisibility);
+document.getElementById("track").addEventListener("change", applyLayerVisibility);
+document.getElementById("waypoints").addEventListener("change", applyLayerVisibility);
 document.getElementById("wp_line").addEventListener("change", () => {
   setWpTrack();
   if (lastPos) rotateShip(currentHeading(lastPos));
