@@ -10,20 +10,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from io import StringIO
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import pandas as pd
+import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .db import fetch_positions_df, get_engine, latest_position
+from .db import fetch_positions_df, get_engine
 
 LIVE_DIR = Path(__file__).parent / "static"
 LIVE_REFRESH_SECONDS = float(os.getenv("LIVE_REFRESH_SECONDS", "10"))
+WAYPOINTS_URL = "https://nes-lter-api.whoi.edu/api/stations/file.csv"
 
 
 @asynccontextmanager
@@ -47,21 +52,87 @@ def _compact_position(row: dict) -> dict:
     }
 
 
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Compass bearing (0-360) from point 1 to point 2, planar approximation."""
+    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
+    x = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
+         - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(math.radians(lon2 - lon1)))
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
+def _heading(row: dict, prev: dict | None) -> float | None:
+    """COG when present, otherwise the direction of travel between the last two fixes."""
+    if row.get("course_deg") is not None:
+        return float(row["course_deg"])
+    if prev is None:
+        return None
+    return _bearing_deg(prev["latitude"], prev["longitude"], row["latitude"], row["longitude"])
+
+
 async def _position_stream() -> AsyncIterator[str]:
-    """Yield the latest position every LIVE_REFRESH_SECONDS."""
+    """Yield the latest position (and calculated heading) every LIVE_REFRESH_SECONDS."""
     while True:
-        row = await asyncio.to_thread(latest_position)
+        rows = await asyncio.to_thread(_latest_rows)
+        row = rows[0] if rows else None
         if row:
-            yield f"data: {json.dumps(_compact_position(row))}\n\n"
+            yield f"data: {json.dumps({**_compact_position(row), 'heading': _heading(row, rows[1] if len(rows) > 1 else None)})}\n\n"
         else:
             # SSE comment: keeps the connection alive while the table is empty.
             yield ": waiting for first position\n\n"
         await asyncio.sleep(LIVE_REFRESH_SECONDS)
 
 
+def _latest_rows(n: int = 2) -> list[dict]:
+    """The n most recent positions, newest first, as dicts."""
+    engine = get_engine()
+    from sqlalchemy import select
+
+    from .db import positions as positions_table
+
+    stmt = select(positions_table).order_by(positions_table.c.received_at.desc(), positions_table.c.id.desc()).limit(n)
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
+    result = []
+    for r in rows:
+        data = dict(r)
+        data["display_time"] = data.get("fix_time") or data.get("received_at")
+        result.append(data)
+    return result
+
+
+@lru_cache(maxsize=1)
+def load_waypoints() -> pd.DataFrame:
+    """Current NES-LTER station positions, cached for the process lifetime."""
+    response = requests.get(WAYPOINTS_URL, timeout=15)
+    response.raise_for_status()
+    wp = pd.read_csv(StringIO(response.text))
+    wp = wp[wp["endDate"].astype(str).str.lower().eq("current")].copy()
+    wp = wp.dropna(subset=["decimalLatitude", "decimalLongitude"])
+    return wp.sort_values(["stationfullname", "station"])
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(LIVE_DIR / "index.html")
+
+
+@app.get("/api/waypoints")
+def waypoints() -> list[dict[str, Any]]:
+    """Current NES-LTER stations; [] when the remote API is unreachable."""
+    try:
+        wp = load_waypoints()
+    except Exception:
+        return []
+    return [
+        {
+            "station": r.station,
+            "name": r.stationfullname,
+            "lat": float(r.decimalLatitude),
+            "lon": float(r.decimalLongitude),
+            "depth_m": None if pd.isna(r.depth_m) else float(r.depth_m),
+        }
+        for r in wp.itertuples(index=False)
+    ]
 
 
 @app.get("/track")

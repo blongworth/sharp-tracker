@@ -20,11 +20,8 @@
   #hud .metric { font-weight: 600; }
   #hud .metric span { float: right; font-variant-numeric: tabular-nums; }
   #hud .dim { color: #666; font-size: 11px; }
-  .ship-marker > div {
-    transform: translate(-12px, -12px) rotate(0deg);
-    width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
-    filter: drop-shadow(0 1px 2px rgba(0,0,0,0.65));
-  }
+  .ship-marker { margin: -9px 0 0 -9px; width: 18px; height: 18px; overflow: visible; }
+  .ship-marker svg { display: block; transition: transform 0.8s linear; }
   #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; }
   #dot.live { background: #16a34a; }
   #dot.stale { background: #dc2626; }
@@ -39,12 +36,13 @@
   </div>
   <div class="row">
     <select id="basemap">
-      <option value="noaa" selected>NOAA nautical charts</option>
-      <option value="esri">Esri Ocean</option>
+      <option value="esri" selected>Esri Ocean</option>
+      <option value="noaa">NOAA nautical charts</option>
       <option value="osm">OpenStreetMap</option>
     </select>
   </div>
   <div class="row"><label><input type="checkbox" id="seamarks" checked/> seamarks</label></div>
+  <div class="row"><label><input type="checkbox" id="waypoints" checked/> track to nearest waypoint</label></div>
   <div class="row"><label><input type="checkbox" id="follow" checked/> follow ship</label></div>
   <hr style="border:none;border-top:1px solid #ddd;margin:8px 0"/>
   <div class="metric">SOG <span id="sog">&mdash;</span></div>
@@ -82,10 +80,16 @@ function styleFor(base, seamarks) {
       base: { type: "raster", tiles: SOURCES[base].tiles, attribution: SOURCES[base].attribution },
       seamarks: { type: "raster", tiles: SEAMARKS.tiles, attribution: SEAMARKS.attribution },
       track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
+      wp_track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
     },
     layers: [
       { id: "base", type: "raster", source: "base" },
       { id: "seamarks", type: "raster", source: "seamarks", layout: { visibility: seamarks ? "visible" : "none" } },
+      {
+        id: "wp_track", type: "line", source: "wp_track",
+        paint: { "line-color": "#f59e0b", "line-width": 2, "line-opacity": 0.75 },
+        layout: { "line-cap": "round", "line-join": "round" },
+      },
       {
         id: "track", type: "line", source: "track",
         paint: { "line-color": "#ff4b4b", "line-width": 3, "line-opacity": 0.85 },
@@ -96,12 +100,15 @@ function styleFor(base, seamarks) {
 
 let track = [];
 let ship = null;
+let waypoints = [];
+let nearestWp = null;
+let lastPos = null;
 let initialized = false;
 
 const map = new maplibregl.Map({
   container: "map",
-  style: styleFor("noaa", true),
-  center: [-70.5, 43.5],   // NES-LTER domain default
+  style: styleFor("esri", true),
+  center: [-70.65, 41.55],   // Woods Hole, MA
   zoom: 8,
   attributionControl: { compact: true },
 });
@@ -109,17 +116,66 @@ const map = new maplibregl.Map({
 const shipEl = document.createElement("div");
 shipEl.className = "ship-marker";
 shipEl.innerHTML =
-  '<div id="ship-rotor">' +
-  '<svg width="24" height="24" viewBox="0 0 24 24" aria-label="ship">' +
-  '<path d="M12 1.8 L20.5 21.5 L12 17.2 L3.5 21.5 Z" fill="#e11d48" stroke="white" stroke-width="1.8"/>' +
-  '<path d="M12 5 L15.2 16.8 L12 15.2 L8.8 16.8 Z" fill="white" opacity="0.85"/>' +
-  "</svg></div>";
+  '<svg viewBox="0 0 24 24" width="18" height="18" aria-label="ship">' +
+  '<path d="M12 2.5 L19 21 L12 17 L5 21 Z" fill="#e11d48" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>' +
+  '</svg>';
 
 function fmt(v, suffix, decimals) {
   return v === null || v === undefined || Number.isNaN(v) ? "\u2014" : v.toFixed(decimals) + suffix;
 }
 
+// 0 deg = north, clockwise; the SVG bow points up, so CSS rotate matches.
+function rotateShip(heading) {
+  const svg = shipEl.querySelector("svg");
+  if (svg && heading !== null && heading !== undefined && !Number.isNaN(heading)) {
+    svg.style.transform = `rotate(${heading}deg)`;
+  }
+}
+
+function setWpTrack() {
+  const src = map.getSource("wp_track");
+  if (!src) return;
+  const show = document.getElementById("waypoints").checked && nearestWp && lastPos;
+  src.setData({
+    type: "Feature", properties: {},
+    geometry: show
+      ? { type: "LineString", coordinates: [[lastPos.lon, lastPos.lat], [nearestWp.lon, nearestWp.lat]] }
+      : { type: "LineString", coordinates: [] },
+  });
+}
+
+// Planar nearest-neighbour, fine over the NES-LTER domain.
+function updateNearestWp(p) {
+  if (!waypoints.length) { nearestWp = null; return; }
+  let best = null, bestD = Infinity;
+  for (const w of waypoints) {
+    const dlat = (w.lat - p.lat) * 60;
+    const dlon = (w.lon - p.lon) * 60 * Math.cos(((w.lat + p.lat) / 2) * Math.PI / 180);
+    const d = dlat * dlat + dlon * dlon;
+    if (d < bestD) { bestD = d; best = w; }
+  }
+  nearestWp = best;
+}
+
+function bearingDeg(lat1, lon1, lat2, lon2) {
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2 * Math.PI / 180);
+  const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180)
+    - Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+// COG when present, else direction toward the nearest waypoint when that layer is on.
+function currentHeading(p) {
+  if (p.cog !== null && p.cog !== undefined && !Number.isNaN(p.cog)) return p.cog;
+  if (document.getElementById("waypoints").checked && nearestWp) {
+    return bearingDeg(p.lat, p.lon, nearestWp.lat, nearestWp.lon);
+  }
+  return null;
+}
+
 function applyPosition(p) {
+  lastPos = p;
   document.getElementById("sog").textContent = fmt(p.sog, " kn", 1);
   document.getElementById("cog").textContent = fmt(p.cog, "\u00b0", 0);
   if (p.t) {
@@ -128,6 +184,8 @@ function applyPosition(p) {
   }
   document.getElementById("last-updated").textContent = "updated " + new Date().toLocaleTimeString();
 
+  updateNearestWp(p);
+  rotateShip(currentHeading(p));
   if (!ship) {
     ship = new maplibregl.Marker({ element: shipEl }).setLngLat([p.lon, p.lat]).addTo(map);
     if (initialized && document.getElementById("follow").checked) {
@@ -139,19 +197,25 @@ function applyPosition(p) {
       map.easeTo({ center: [p.lon, p.lat], duration: 1500 });
     }
   }
-  const rotor = shipEl.querySelector("#ship-rotor");
-  rotor.style.transform = "translate(-12px, -12px) rotate(" + (p.cog || 0) + "deg)";
-
   track.push([p.lon, p.lat]);
   if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
   map.getSource("track").setData({
     type: "Feature", properties: {},
     geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
   });
+  setWpTrack();
   if (!initialized) {
     initialized = true;
     if (document.getElementById("follow").checked) map.setZoom(12);
   }
+}
+
+function wpMarker(w) {
+  const el = document.createElement("div");
+  el.style.cssText =
+    "font: 700 10px system-ui, sans-serif; color: #78350f; text-shadow: 0 0 3px #fff, 0 0 3px #fff; white-space: nowrap; margin: 0 0 0 8px;";
+  el.textContent = w.station;
+  return new maplibregl.Marker({ element: el }).setLngLat([w.lon, w.lat]).addTo(map);
 }
 
 map.on("load", async () => {
@@ -159,13 +223,19 @@ map.on("load", async () => {
   const status = document.getElementById("status");
 
   try {
+    const wps = await (await fetch("/api/waypoints")).json();
+    if (Array.isArray(wps)) {
+      waypoints = wps;
+      for (const w of waypoints) wpMarker(w);
+    }
+  } catch (e) { console.warn("waypoints unavailable", e); }
+
+  try {
     const res = await fetch("/api/positions?window_hours=6");
     if (res.ok) {
       const pts = await res.json();
-      for (const p of pts) {
-        track.push([p.lon, p.lat]);
-        applyPosition(p);
-      }
+      for (const p of pts) applyPosition(p);
+      if (pts.length) setWpTrack();
       if (track.length) {
         map.getSource("track").setData({
           type: "Feature", properties: {},
@@ -191,6 +261,10 @@ document.getElementById("basemap").addEventListener("change", (e) => {
 });
 document.getElementById("seamarks").addEventListener("change", (e) => {
   map.setLayoutProperty("seamarks", "visibility", e.target.checked ? "visible" : "none");
+});
+document.getElementById("waypoints").addEventListener("change", () => {
+  setWpTrack();
+  if (lastPos) rotateShip(currentHeading(lastPos));
 });
 </script>
 </body>
