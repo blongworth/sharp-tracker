@@ -11,14 +11,18 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "pydantic>=1.10",
     "pynmea2>=1.19",
+    "pyserial>=3.5",
+    "python-dotenv>=1.0",
     "requests>=2.32",
     "sqlalchemy>=2.0",
     "streamlit>=1.37",
+    "streamlit-autorefresh>=1.0",
     "streamlit-folium>=0.22",
     "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]
+sharp-tracker = "sharp_tracker.run:main"
 sharp-tracker-collector = "sharp_tracker.collector:main"
 
 [build-system]

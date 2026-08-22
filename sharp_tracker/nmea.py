@@ -21,6 +21,32 @@ def _fix_datetime(msg: Any) -> str | None:
     return None
 
 
+def parse_navigation(line: str) -> dict | None:
+    """Parse speed/course from navigation-only sentences such as VTG."""
+    raw = line.strip()
+    if not raw:
+        return None
+    try:
+        msg = pynmea2.parse(raw)
+    except pynmea2.ParseError:
+        return None
+
+    speed_knots = _float_or_none(getattr(msg, "spd_over_grnd_kts", None))
+    if speed_knots is None:
+        speed_knots = _float_or_none(getattr(msg, "spd_over_grnd", None))
+    course_deg = _float_or_none(getattr(msg, "true_track", None))
+    if course_deg is None:
+        course_deg = _float_or_none(getattr(msg, "true_course", None))
+    if course_deg is None:
+        # Some feeds only populate magnetic VTG track. It is still useful for
+        # orienting the dashboard vessel icon when true COG is absent.
+        course_deg = _float_or_none(getattr(msg, "mag_track", None))
+
+    if speed_knots is None and course_deg is None:
+        return None
+    return {"speed_knots": speed_knots, "course_deg": course_deg}
+
+
 def parse_position(line: str, received_at: datetime | None = None) -> dict | None:
     """Parse a NMEA sentence and return a normalized position row, or None.
 

@@ -13,3 +13,4 @@ wheels/
 data/
 *.sqlite3
 .env
+logs/

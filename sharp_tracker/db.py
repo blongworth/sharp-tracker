@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from dotenv import load_dotenv
 from sqlalchemy import (
     Column,
     DateTime,
@@ -20,6 +21,8 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.engine import Engine
+
+load_dotenv()
 
 DEFAULT_DB_PATH = "data/positions.sqlite3"
 
