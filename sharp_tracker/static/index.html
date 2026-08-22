@@ -116,7 +116,8 @@ let waypoints = [];
 let wpMarkers = [];
 let nearestWp = null;
 let lastPos = null;
-let initialized = false;
+let replaying = false;      // true while the initial position batch loads
+let followTarget = null;    // last point the camera centered on
 
 const map = new maplibregl.Map({
   container: "map",
@@ -126,8 +127,7 @@ const map = new maplibregl.Map({
   attributionControl: { compact: true },
 });
 
-const shipEl = document.createElement("div");
-shipEl.className = "ship-marker";
+const shipEl = document.createElement("div");shipEl.className = "ship-marker";
 // Outline body with a triangular nose on the top (direction of travel) and a
 // filled point at the icon's center; the marker is anchored at that center
 // so the dot sits exactly over the ship's position.
@@ -136,6 +136,18 @@ shipEl.innerHTML =
   '<path d="M8 21 L8 8 L12 3 L16 8 L16 21 Z" fill="rgba(225,29,72,0.25)" stroke="#e11d48" stroke-width="1.6" stroke-linejoin="round"/>' +
   '<circle cx="12" cy="12" r="1.6" fill="#e11d48"/>' +
   '</svg>';
+
+// Follow the ship without fighting the user's own gestures: skip while any
+// interaction is in progress, and skip no-op pans (< ~50 m of ship movement).
+function followShip(p) {
+  if (!document.getElementById("follow").checked || replaying || map.isInteracting()) return;
+  if (followTarget && Math.hypot(p.lon - followTarget[0], p.lat - followTarget[1]) < 0.0005) return;
+  followTarget = [p.lon, p.lat];
+  map.easeTo({ center: [p.lon, p.lat], duration: 1200 });
+}
+// Any manual move clears the memo so follow re-centers when it next applies.
+map.on("dragstart", () => { followTarget = null; });
+map.on("wheel", () => { followTarget = null; });
 
 function fmt(v, suffix, decimals) {
   return v === null || v === undefined || Number.isNaN(v) ? "\u2014" : v.toFixed(decimals) + suffix;
@@ -205,15 +217,10 @@ function applyPosition(p) {
   rotateShip(currentHeading(p));
   if (!ship) {
     ship = new maplibregl.Marker({ element: shipEl, anchor: "center" }).setLngLat([p.lon, p.lat]).addTo(map);
-    if (initialized && document.getElementById("follow").checked) {
-      map.easeTo({ center: [p.lon, p.lat], duration: 1500 });
-    }
   } else {
     ship.setLngLat([p.lon, p.lat]);
-    if (document.getElementById("follow").checked) {
-      map.easeTo({ center: [p.lon, p.lat], duration: 1500 });
-    }
   }
+  followShip(p);
   track.push([p.lon, p.lat]);
   if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
   map.getSource("track").setData({
@@ -221,10 +228,6 @@ function applyPosition(p) {
     geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
   });
   setWpTrack();
-  if (!initialized) {
-    initialized = true;
-    if (document.getElementById("follow").checked) map.setZoom(12);
-  }
 }
 
 function wpMarker(w) {
@@ -251,7 +254,12 @@ map.on("load", async () => {
     const res = await fetch("/api/positions?window_hours=168");
     if (res.ok) {
       const pts = await res.json();
+      // No camera commands during the batch: fitBounds frames the whole track
+      // exactly once when it is done (stacking easeTo per point made the map
+      // fly wildly and slide under the markers).
+      replaying = true;
       for (const p of pts) applyPosition(p);
+      replaying = false;
       if (pts.length) setWpTrack();
       if (track.length) {
         map.getSource("track").setData({
@@ -259,6 +267,7 @@ map.on("load", async () => {
           geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
         });
         map.fitBounds(maplibregl.LngLatBounds(track).pad(0.2), { maxZoom: 12 });
+        followTarget = [pts[pts.length - 1].lon, pts[pts.length - 1].lat];
       }
     }
   } catch (e) { console.warn("initial window failed", e); }
@@ -288,6 +297,9 @@ document.getElementById("waypoints").addEventListener("change", (e) => {
 document.getElementById("wp_line").addEventListener("change", () => {
   setWpTrack();
   if (lastPos) rotateShip(currentHeading(lastPos));
+});
+document.getElementById("follow").addEventListener("change", (e) => {
+  if (e.target.checked && lastPos) followShip(lastPos);
 });
 </script>
 </body>
