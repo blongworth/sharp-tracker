@@ -96,7 +96,7 @@ function graticuleFeatures(kind) {
 function styleFor(base, seamarks) {
   return {
     version: 8,
-    glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
+    glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
     sources: {
       base: { type: "raster", tiles: SOURCES[base].tiles, attribution: SOURCES[base].attribution },
       seamarks: { type: "raster", tiles: SEAMARKS.tiles, attribution: SEAMARKS.attribution },
@@ -205,6 +205,23 @@ function rotateShip(heading) {
   }
 }
 
+function waypointsGeoJSON() {
+  return {
+    type: "FeatureCollection",
+    features: waypoints.map((w) => ({
+      type: "Feature", properties: { station: w.station },
+      geometry: { type: "Point", coordinates: [w.lon, w.lat] },
+    })),
+  };
+}
+
+function trackGeoJSON() {
+  return {
+    type: "Feature", properties: {},
+    geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : track.slice(0, 1) },
+  };
+}
+
 function setWpTrack() {
   const src = map.getSource("wp_track");
   if (!src) return;
@@ -267,10 +284,7 @@ function applyPosition(p) {
   followShip(p);
   track.push([p.lon, p.lat]);
   if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
-  map.getSource("track").setData({
-    type: "Feature", properties: {},
-    geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
-  });
+  map.getSource("track").setData(trackGeoJSON());
   setWpTrack();
 }
 
@@ -307,13 +321,7 @@ map.on("load", async () => {
     const wps = await (await fetch("/api/waypoints")).json();
     if (Array.isArray(wps)) {
       waypoints = wps;
-      map.getSource("waypoints").setData({
-        type: "FeatureCollection",
-        features: wps.map((w) => ({
-          type: "Feature", properties: { station: w.station },
-          geometry: { type: "Point", coordinates: [w.lon, w.lat] },
-        })),
-      });
+      map.getSource("waypoints").setData(waypointsGeoJSON());
     }
   } catch (e) { console.warn("waypoints unavailable", e); }
 
@@ -329,10 +337,7 @@ map.on("load", async () => {
       replaying = false;
       if (pts.length) setWpTrack();
       if (track.length) {
-        map.getSource("track").setData({
-          type: "Feature", properties: {},
-          geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
-        });
+        map.getSource("track").setData(trackGeoJSON());
         // Manual bounds: the vendored maplibre build's LngLatBounds export is
         // broken, so compute the box ourselves and pad in pixels.
         const lons = track.map((c) => c[0]);
@@ -361,6 +366,16 @@ map.on("load", async () => {
 
 document.getElementById("basemap").addEventListener("change", (e) => {
   map.setStyle(styleFor(e.target.value, document.getElementById("seamarks").checked));
+  // setStyle() rebuilds every source from scratch (empty), discarding whatever
+  // was loaded into it. Re-push the data we've retained in JS once the new
+  // style is idle (fully loaded and rendered), or waypoints/track/wp_track
+  // vanish on basemap switch and never come back.
+  map.once("idle", () => {
+    map.getSource("waypoints").setData(waypointsGeoJSON());
+    map.getSource("track").setData(trackGeoJSON());
+    setWpTrack();
+    applyLayerVisibility();
+  });
 });
 document.getElementById("seamarks").addEventListener("change", applyLayerVisibility);
 document.getElementById("track").addEventListener("change", applyLayerVisibility);
