@@ -1,12 +1,11 @@
 [project]
 name = "sharp-tracker"
 version = "0.1.0"
-description = "Listen to NMEA position data, log fixes, and display a Streamlit tracker map."
+description = "Listen to NMEA position data, log fixes, and display a live MapLibre tracker map."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
-    "folium>=0.17",
     "pandas>=2.2",
     "psycopg[binary]>=3.2",
     "pydantic>=1.10",
@@ -15,9 +14,6 @@ dependencies = [
     "python-dotenv>=1.0",
     "requests>=2.32",
     "sqlalchemy>=2.0",
-    "streamlit>=1.37",
-    "streamlit-autorefresh>=1.0",
-    "streamlit-folium>=0.22",
     "uvicorn[standard]>=0.30",
 ]
 

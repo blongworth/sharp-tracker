@@ -1,3 +1,5 @@
+"""Run the NMEA collector and serve the live MapLibre dashboard."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,7 +17,7 @@ load_dotenv()
 
 
 def dashboard_is_running(host: str, port: int) -> bool:
-    url = f"http://{host}:{port}/_stcore/health"
+    url = f"http://{host}:{port}/"
     try:
         with urlopen(url, timeout=1.5) as response:
             return response.status == 200
@@ -26,19 +28,19 @@ def dashboard_is_running(host: str, port: int) -> bool:
 
 
 def start_dashboard(host: str, port: int) -> subprocess.Popen:
-    cmd = [
-        sys.executable,
-        "-m",
-        "streamlit",
-        "run",
-        "streamlit_app.py",
-        "--server.address",
-        host,
-        "--server.port",
-        str(port),
-    ]
-    print(f"Starting dashboard at http://{host}:{port}")
-    return subprocess.Popen(cmd)
+    print(f"Starting live map at http://{host}:{port}")
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "sharp_tracker.live:app",
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ]
+    )
 
 
 def start_collector() -> subprocess.Popen:
@@ -48,10 +50,10 @@ def start_collector() -> subprocess.Popen:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run the NMEA collector and serve the Streamlit dashboard."
+        description="Run the NMEA collector and serve the live map dashboard."
     )
-    parser.add_argument("--host", default=os.getenv("STREAMLIT_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("STREAMLIT_PORT", "8501")))
+    parser.add_argument("--host", default=os.getenv("LIVE_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("LIVE_PORT", "8090")))
     args = parser.parse_args()
 
     dashboard_process: subprocess.Popen | None = None
@@ -59,7 +61,7 @@ def main() -> None:
     started_dashboard = False
 
     if dashboard_is_running(args.host, args.port):
-        print(f"Dashboard already running at http://{args.host}:{args.port}")
+        print(f"Live map already running at http://{args.host}:{args.port}")
     else:
         dashboard_process = start_dashboard(args.host, args.port)
         started_dashboard = True

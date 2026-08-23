@@ -1,6 +1,6 @@
 # SHARP Tracker
 
-Python app to read NMEA position sentences from a TCP or serial source, ingest positions over HTTP, store them in SQLite/Postgres, and display them in a Streamlit map.
+Python app to read NMEA position sentences from a TCP or serial source, ingest positions over HTTP, store them in SQLite/Postgres, and display them in a live MapLibre map.
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Railway ingest API
         ↓
 Railway Postgres
         ↓
-Streamlit tracker map
+Live tracker map (MapLibre + SSE)
 ```
 
 Railway does not need inbound access to the ship LAN. The collector only needs outbound HTTPS access to the Railway ingest API.
@@ -37,17 +37,17 @@ pip install -e .
 uv run sharp-tracker
 ```
 
-This starts the NMEA collector and serves the Streamlit dashboard at `http://127.0.0.1:8501`. If a dashboard is already running on that host/port, it reuses it instead of starting another one.
+This starts the NMEA collector and serves the live map dashboard at `http://127.0.0.1:8090`. If a dashboard is already running on that host/port, it reuses it instead of starting another one.
 
 Optional host/port overrides:
 
 ```bash
-uv run sharp-tracker --host 0.0.0.0 --port 8501
+uv run sharp-tracker --host 0.0.0.0 --port 8090
 ```
 
 ## Live map (push-based, no page refreshes)
 
-The live map is a single MapLibre page served by FastAPI and updated over
+The live map is the main dashboard: a single MapLibre page served by FastAPI and updated over
 Server-Sent Events — no full page reloads, so it stays smooth indefinitely:
 
 ```bash
@@ -56,8 +56,7 @@ uv run sharp-tracker-live          # http://127.0.0.1:8090
 
 Endpoints: `GET /` (map), `GET /track` (SSE stream, `LIVE_REFRESH_SECONDS`,
 default 10s), `GET /api/positions?window_hours=6` (initial track window).
-Deploy as the `live` process on Railway alongside `ingest`.
-The Streamlit app remains the analysis view (time slider, filters, tables).
+Deploy as the `web` process on Railway alongside `ingest`.
 
 ## Test the whole system locally
 
@@ -93,13 +92,13 @@ python -m sharp_tracker.collector
 
 If `TRACKER_API_URL` is not set, the collector writes directly to the configured DB instead.
 
-### 4. Start the Streamlit tracker
+### 4. Start the live tracker
 
 ```bash
-streamlit run streamlit_app.py
+uv run sharp-tracker-live
 ```
 
-The app shows an interactive Folium map with an Esri Ocean bathymetric basemap, zoom controls, a track line, point popups, and a timestamp range filter.
+The map shows an Esri Ocean bathymetric basemap, seamarks, a 1-degree graticule, the ship track, the vessel position updated over SSE, and current NES-LTER waypoints with a line to the nearest one.
 
 ## Ship-network collector
 
@@ -135,20 +134,20 @@ Local default is SQLite:
 DATABASE_PATH=data/positions.sqlite3
 ```
 
-For Railway, attach Postgres. Railway will provide `DATABASE_URL`; the app automatically uses it. Both the ingest API and Streamlit app should point at the same Postgres database.
+For Railway, attach Postgres. Railway will provide `DATABASE_URL`; the app automatically uses it. Both the ingest API and the live map should point at the same Postgres database.
 
 ## Railway deployment notes
 
 `Procfile` includes three process types:
 
-- `web`: Streamlit map app
+- `web`: live map app (the main application)
 - `ingest`: FastAPI ingest API
 - `worker`: NMEA collector
 
 Recommended Railway setup:
 
 1. Create a Railway Postgres database.
-2. Deploy this repo as a Streamlit service using the `web` process.
+2. Deploy this repo using the `web` process (the live map).
 3. Deploy this repo as an ingest API service using the `ingest` process.
 4. Set `TRACKER_INGEST_TOKEN` on the ingest service.
 5. Run the collector on the ship-network machine, not on Railway, because `192.168.20.215` is a private LAN address.
@@ -168,5 +167,8 @@ DATABASE_PATH=data/positions.sqlite3
 DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
 TRACKER_API_URL=https://your-ingest-service.up.railway.app
 TRACKER_INGEST_TOKEN=change-me
+LIVE_HOST=127.0.0.1
+LIVE_PORT=8090
+LIVE_REFRESH_SECONDS=10
 LOG_LEVEL=INFO
 ```

@@ -4,8 +4,8 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>SHARP Tracker — Live</title>
-<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet"/>
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link href="/vendor/maplibre-gl.css" rel="stylesheet"/>
+<script src="/vendor/maplibre-gl.js"></script>
 <style>
   html, body { margin: 0; height: 100%; font-family: -apple-system, system-ui, sans-serif; }
   #map { position: absolute; inset: 0; }
@@ -96,6 +96,7 @@ function graticuleFeatures(kind) {
 function styleFor(base, seamarks) {
   return {
     version: 8,
+    glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
     sources: {
       base: { type: "raster", tiles: SOURCES[base].tiles, attribution: SOURCES[base].attribution },
       seamarks: { type: "raster", tiles: SEAMARKS.tiles, attribution: SEAMARKS.attribution },
@@ -118,7 +119,7 @@ function styleFor(base, seamarks) {
       },
       {
         id: "graticule_labels", type: "symbol", source: "graticule_labels",
-        layout: { "text-field": ["get", "label"], "text-size": 9, "text-anchor": "left" },
+        layout: { "text-field": ["get", "label"], "text-font": ["Noto Sans Regular"], "text-size": 9, "text-anchor": "left" },
         paint: { "text-color": "#475569", "text-halo-color": "#ffffff", "text-halo-width": 1.5 },
       },
       {
@@ -140,7 +141,7 @@ function styleFor(base, seamarks) {
       {
         id: "wp_labels", type: "symbol", source: "waypoints",
         layout: {
-          "text-field": ["get", "station"], "text-size": 10,
+          "text-field": ["get", "station"], "text-font": ["Noto Sans Regular"], "text-size": 10,
           "text-anchor": "left", "text-offset": [1.4, 0.2],
         },
         paint: { "text-color": "#78350f", "text-halo-color": "#ffffff", "text-halo-width": 2 },
@@ -178,15 +179,19 @@ shipEl.innerHTML =
 
 // Follow the ship without fighting the user's own gestures: skip while any
 // interaction is in progress, and skip no-op pans (< ~50 m of ship movement).
+// MapLibre has no isInteracting() (that's mapbox-gl), so track it locally.
+let userInteracting = false;
 function followShip(p) {
-  if (!document.getElementById("follow").checked || replaying || map.isInteracting()) return;
+  if (!document.getElementById("follow").checked || replaying || userInteracting) return;
   if (followTarget && Math.hypot(p.lon - followTarget[0], p.lat - followTarget[1]) < 0.0005) return;
   followTarget = [p.lon, p.lat];
   map.easeTo({ center: [p.lon, p.lat], duration: 1200 });
 }
 // Any manual move clears the memo so follow re-centers when it next applies.
-map.on("dragstart", () => { followTarget = null; });
-map.on("wheel", () => { followTarget = null; });
+map.on("dragstart", () => { userInteracting = true; followTarget = null; });
+map.on("wheel", () => { userInteracting = true; followTarget = null; });
+map.on("pinchstart", () => { userInteracting = true; followTarget = null; });
+map.on("moveend", () => { userInteracting = false; });
 
 function fmt(v, suffix, decimals) {
   return v === null || v === undefined || Number.isNaN(v) ? "\u2014" : v.toFixed(decimals) + suffix;
@@ -328,7 +333,14 @@ map.on("load", async () => {
           type: "Feature", properties: {},
           geometry: { type: track.length > 1 ? "LineString" : "Point", coordinates: track.length > 1 ? track : [track[0]] },
         });
-        map.fitBounds(maplibregl.LngLatBounds(track).pad(0.2), { maxZoom: 12 });
+        // Manual bounds: the vendored maplibre build's LngLatBounds export is
+        // broken, so compute the box ourselves and pad in pixels.
+        const lons = track.map((c) => c[0]);
+        const lats = track.map((c) => c[1]);
+        map.fitBounds(
+          [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+          { maxZoom: 12, padding: 40 },
+        );
         followTarget = [pts[pts.length - 1].lon, pts[pts.length - 1].lat];
       }
     }

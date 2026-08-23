@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from .db import fetch_positions_df, get_engine
 
@@ -114,6 +115,9 @@ def load_waypoints() -> pd.DataFrame:
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(LIVE_DIR / "index.html")
+
+
+app.mount("/vendor", StaticFiles(directory=LIVE_DIR / "vendor"), name="vendor")
 
 
 @app.get("/api/waypoints")
