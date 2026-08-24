@@ -37,7 +37,6 @@
   <div class="row">
     <select id="basemap">
       <option value="esri" selected>Esri Ocean</option>
-      <option value="navcharts">Nautical charts</option>
       <option value="osm">OpenStreetMap</option>
     </select>
   </div>
@@ -64,17 +63,6 @@ const SOURCES = {
   esri: {
     tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}"],
     attribution: "Esri, Garmin, GEBCO, NOAA NGDC",
-  },
-  navcharts: {
-    // tileservice.charts.noaa.gov (NOAA's old RNC tile service) was shut down
-    // in 2021-2022 when NOAA retired raster charts entirely; this Esri-hosted
-    // cache aggregates NOAA and other national nautical charts and is still
-    // maintained. Native detail stops around z10 (higher zooms return a
-    // "Map data not yet available" placeholder tile), so cap maxzoom there
-    // and let MapLibre oversample instead of fetching those placeholders.
-    tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}"],
-    attribution: "Esri, East View Cartographic",
-    maxzoom: 10,
   },
   osm: {
     tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
@@ -109,10 +97,7 @@ function styleFor(base, seamarks) {
     version: 8,
     glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
     sources: {
-      base: {
-        type: "raster", tiles: SOURCES[base].tiles, attribution: SOURCES[base].attribution,
-        tileSize: TILE_SIZE, maxzoom: SOURCES[base].maxzoom || 22,
-      },
+      base: { type: "raster", tiles: SOURCES[base].tiles, attribution: SOURCES[base].attribution, tileSize: TILE_SIZE },
       seamarks: { type: "raster", tiles: SEAMARKS.tiles, attribution: SEAMARKS.attribution, tileSize: TILE_SIZE },
       track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
       wp_track: { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [] } } },
