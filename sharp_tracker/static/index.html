@@ -20,7 +20,7 @@
   #hud .metric { font-weight: 600; }
   #hud .metric span { float: right; font-variant-numeric: tabular-nums; }
   #hud .dim { color: #666; font-size: 11px; }
-  .ship-marker { width: 20px; height: 20px; }
+  .ship-marker { width: 32px; height: 32px; }
   .ship-marker svg { display: block; transform-origin: 50% 50%; transition: transform 0.8s linear; }
   #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; }
   #dot.live { background: #16a34a; }
@@ -46,6 +46,7 @@
   <div class="row"><label><input type="checkbox" id="wp_line" checked/> line to nearest waypoint</label></div>
   <div class="row"><label><input type="checkbox" id="follow" checked/> follow ship</label></div>
   <hr style="border:none;border-top:1px solid #ddd;margin:8px 0"/>
+  <div class="metric">Pos <span id="pos" style="font-size:11px">&mdash;</span></div>
   <div class="metric">SOG <span id="sog">&mdash;</span></div>
   <div class="metric">COG <span id="cog">&mdash;</span></div>
   <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span></div>
@@ -171,7 +172,7 @@ const shipEl = document.createElement("div");shipEl.className = "ship-marker";
 // filled point at the icon's center; the marker is anchored at that center
 // so the dot sits exactly over the ship's position.
 shipEl.innerHTML =
-  '<svg viewBox="0 0 24 24" width="20" height="20" aria-label="ship">' +
+  '<svg viewBox="0 0 24 24" width="32" height="32" aria-label="ship">' +
   '<path d="M8 21 L8 8 L12 3 L16 8 L16 21 Z" fill="rgba(225,29,72,0.25)" stroke="#e11d48" stroke-width="1.6" stroke-linejoin="round"/>' +
   '<circle cx="12" cy="12" r="1.6" fill="#e11d48"/>' +
   '</svg>';
@@ -265,6 +266,7 @@ function currentHeading(p) {
 
 function applyPosition(p) {
   lastPos = p;
+  document.getElementById("pos").textContent = fmt(p.lat, "°, ", 4) + fmt(p.lon, "°", 4);
   document.getElementById("sog").textContent = fmt(p.sog, " kn", 1);
   document.getElementById("cog").textContent = fmt(p.cog, "\u00b0", 0);
   if (p.t) {
@@ -287,19 +289,20 @@ function applyPosition(p) {
   setWpTrack();
 }
 
-// Hover readout: show the exact coordinates of the waypoint under the cursor
-// so any dot's position can be checked against the graticule.
+// Hover readout: cursor position, or the exact coordinates of the waypoint
+// under the cursor when over one, so any dot's position can be checked
+// against the graticule.
 function bindHover() {
   if (hoverBound) return;
   hoverBound = true;
   const wpHover = document.getElementById("wp-hover");
   map.on("mousemove", (e) => {
-    if (!map.getLayer("wp_dots")) return;
-    const hits = map.queryRenderedFeatures(e.point, { layers: ["wp_dots"] });
+    const hits = map.getLayer("wp_dots") ? map.queryRenderedFeatures(e.point, { layers: ["wp_dots"] }) : [];
     wpHover.textContent = hits.length
       ? hits[0].properties.station + " \u2014 " + hits[0].geometry.coordinates[1].toFixed(4) + "\u00b0, " + hits[0].geometry.coordinates[0].toFixed(4) + "\u00b0"
-      : "";
+      : e.lngLat.lat.toFixed(4) + "\u00b0, " + e.lngLat.lng.toFixed(4) + "\u00b0";
   });
+  map.getContainer().addEventListener("mouseleave", () => { wpHover.textContent = ""; });
 }
 
 // Apply HUD checkbox state to layer visibility (also after each style load,
