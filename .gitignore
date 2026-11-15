@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Local data and secrets
-data/
+/data/
 *.sqlite3
 .env
 logs/
