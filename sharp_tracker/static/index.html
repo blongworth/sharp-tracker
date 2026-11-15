@@ -267,8 +267,9 @@ function currentHeading(p) {
 
 // Freshness: the SSE stream re-sends the latest stored fix every few seconds,
 // so a live connection alone doesn't mean data is arriving. Go red when the
-// newest fix is older than STALE_AFTER_S (collector, GPS, or link down).
-const STALE_AFTER_S = 120;
+// newest fix is older than staleAfterS (collector, GPS, or link down). The
+// server sends the threshold (STALE_AFTER_SECONDS) with each message.
+let staleAfterS = 180;
 let lastFixMs = null;
 let sseState = "connecting";  // connecting | open | error
 
@@ -290,7 +291,7 @@ function updateFreshness() {
     dot.className = "stale"; status.textContent = "reconnecting…";
   } else if (age === null) {
     dot.className = ""; status.textContent = "waiting for first fix";
-  } else if (age > STALE_AFTER_S) {
+  } else if (age > staleAfterS) {
     dot.className = "stale"; status.textContent = "no new fix for " + ago(age).replace(" ago", "");
   } else {
     dot.className = "live"; status.textContent = "live";
@@ -300,6 +301,7 @@ setInterval(updateFreshness, 5000);
 
 function applyPosition(p) {
   lastPos = p;
+  if (typeof p.stale_after === "number") staleAfterS = p.stale_after;
   document.getElementById("pos").textContent = fmt(p.lat, "°, ", 4) + fmt(p.lon, "°", 4);
   document.getElementById("sog").textContent = fmt(p.sog, " kn", 1);
   document.getElementById("cog").textContent = fmt(p.cog, "\u00b0", 0);

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 
+import nmea_gen
 import pytest
 import requests
 from fastapi.testclient import TestClient
@@ -15,9 +16,10 @@ T0 = datetime(2026, 11, 15, 12, 35, 19, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def fresh_collector(monkeypatch):
-    monkeypatch.setattr(collector, "_last_logged", None)
+    monkeypatch.setattr(collector, "_averager", None)
     monkeypatch.setattr(collector, "LATEST_NAV", {})
-    monkeypatch.setattr(collector, "LOG_INTERVAL_SECONDS", 5.0)
+    # Most tests want one stored row per fix; averaging tests turn it on.
+    monkeypatch.setattr(collector, "AVERAGE_SECONDS", 0)
     monkeypatch.delenv("TRACKER_INGEST_TOKEN", raising=False)
 
 
@@ -29,29 +31,55 @@ def feed(lines: list[str], seconds: list[float]) -> list[dict | None]:
 
 
 def stored(engine) -> list[dict]:
-    return list(reversed(latest_positions(100)))
+    return list(reversed(latest_positions(1000)))
 
 
-def test_sample_feed_throttled_and_logged_locally(engine, sample_lines):
-    # Arrival times (s) for each sample line; a real feed sends a burst per fix.
+def test_without_averaging_every_valid_fix_is_logged(engine, sample_lines):
     seconds = [0, 0, 0, 1, 7, 7, 11, 11, 11, 16, 16, 16]
     feed(sample_lines, seconds)
     rows = stored(engine)
-    # 0 s GGA kept; same-second RMC and 1 s GGA throttled; 7 s GGA kept.
     # Invalid fixes at 11 s, empty GGA at 16 s and junk lines never count.
-    assert [(r["sentence_type"], r["received_at"]) for r in rows] == [
-        ("GGA", T0),
-        ("GGA", T0 + timedelta(seconds=7)),
+    assert [r["sentence_type"] for r in rows] == ["GGA", "RMC", "GGA", "GGA", "RMC"]
+    # The 1 s GGA has no COG of its own; it carries the RMC/VTG nav seen earlier.
+    assert rows[2]["course_deg"] == 46.0
+    assert rows[2]["speed_knots"] == 8.6
+
+
+def test_averaging_stores_one_row_per_utc_window(engine, monkeypatch):
+    monkeypatch.setattr(collector, "AVERAGE_SECONDS", 60)
+    start = datetime(2026, 11, 15, 12, 0, 20, tzinfo=timezone.utc)
+    for s in range(0, 160):  # 12:00:20 .. 12:02:59 at 1 Hz, GGA + RMC each second
+        lines = nmea_gen.sentences(s, start=start).decode().splitlines()
+        for line in lines:
+            collector.process_nmea_line(
+                line, now=start + timedelta(seconds=s, milliseconds=100)
+            )
+    rows = stored(engine)
+    # 12:00 (partial, from :20) and 12:01 closed; 12:02 still open.
+    assert [r["fix_time"].isoformat() for r in rows] == [
+        "2026-11-15T12:00:30+00:00",
+        "2026-11-15T12:01:30+00:00",
     ]
-    # The 7 s GGA has no COG of its own; it carries RMC/VTG nav seen earlier.
-    assert rows[1]["course_deg"] == 46.0
-    assert rows[1]["speed_knots"] == 8.6
+    assert rows[0]["raw"].startswith("AVG 60s n=40 ")
+    assert rows[1]["raw"].startswith("AVG 60s n=60 ")
+    assert rows[1]["sentence_type"] == "AVG"
+    assert rows[1]["course_deg"] == pytest.approx(45.0)
+    assert rows[1]["speed_knots"] == pytest.approx(8.5)
+    # received_at is when the window closed (first fix of the next window).
+    assert rows[1]["received_at"] == datetime(
+        2026, 11, 15, 12, 2, 0, 100000, tzinfo=timezone.utc
+    )
 
 
-def test_interval_zero_keeps_every_valid_fix(engine, sample_lines, monkeypatch):
-    monkeypatch.setattr(collector, "LOG_INTERVAL_SECONDS", 0.0)
-    feed(sample_lines, [0] * len(sample_lines))
-    assert len(stored(engine)) == 5
+def test_averaged_rows_forward_through_real_api(engine, monkeypatch):
+    monkeypatch.setattr(collector, "AVERAGE_SECONDS", 10)
+    start = datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+    for s in range(35):
+        for line in nmea_gen.sentences(s, start=start).decode().splitlines():
+            collector.process_nmea_line(line, now=start + timedelta(seconds=s))
+    with TestClient(live.app) as client:
+        assert collector._forward_once(client, "http://testserver") == 3
+    assert len(stored(engine)) == 3  # AVG rows validate and resend idempotently
 
 
 class FakeSession:
@@ -152,6 +180,7 @@ def test_unreachable_source_warns_once_then_periodically(monkeypatch, caplog):
 
 def test_reconnect_resets_failure_count(monkeypatch, caplog):
     caplog.set_level("INFO", logger="sharp_tracker.collector")
+
     def connect():
         collector._source_connected("TCP NMEA source test")
 

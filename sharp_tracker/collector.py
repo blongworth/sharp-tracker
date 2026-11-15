@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from .averaging import Averager
 from .db import get_forward_cursor, insert_position, mark_forwarded, unsent_positions
 from .nmea import parse_line
 
@@ -22,9 +23,9 @@ LOG = logging.getLogger(__name__)
 DEFAULT_HOST = "192.168.20.215"
 DEFAULT_PORT = 4000
 DEFAULT_SERIAL_BAUD = 4800
-# Keep at most one fix per interval. Also collapses GGA/RMC pairs that report
-# the same fix. 0 keeps every fix, including both halves of a GGA/RMC pair.
-LOG_INTERVAL_SECONDS = float(os.getenv("LOG_INTERVAL_SECONDS", "5"))
+# Average fixes into UTC-aligned windows of this many seconds (see averaging.py).
+# 0 stores every fix as received, including both halves of a GGA/RMC pair.
+AVERAGE_SECONDS = int(os.getenv("AVERAGE_SECONDS", "60"))
 BATCH_SIZE = 50
 IDLE_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 60.0
@@ -33,7 +34,7 @@ SOURCE_WARNING_EVERY = 60
 
 LATEST_NAV: dict[str, Any] = {}
 _forwarder_thread: threading.Thread | None = None
-_last_logged: datetime | None = None
+_averager: Averager | None = None
 _source_failures = 0
 
 
@@ -137,13 +138,15 @@ def _collect_serial_once() -> None:
 
 
 def process_nmea_line(line: str, now: datetime | None = None) -> dict[str, Any] | None:
-    """Parse one NMEA line and log the fix locally; returns the stored position.
+    """Parse one NMEA line; returns the position stored locally, if any.
 
-    Every kept fix goes to the local database first. When TRACKER_API_URL is
-    set, the forwarder thread sends it on from there, so nothing is lost if the
-    link or the server is down.
+    With AVERAGE_SECONDS > 0, fixes are averaged and one row is stored per
+    window, when the first fix of the next window arrives. Every stored row
+    goes to the local database first; when TRACKER_API_URL is set, the
+    forwarder thread sends it on from there, so nothing is lost if the link or
+    the server is down.
     """
-    global _last_logged
+    global _averager
 
     now = now or datetime.now(timezone.utc)
     nav, position = parse_line(line, received_at=now)
@@ -158,10 +161,14 @@ def process_nmea_line(line: str, now: datetime | None = None) -> dict[str, Any] 
         if position.get(key) is None and LATEST_NAV.get(key) is not None:
             position[key] = LATEST_NAV[key]
 
-    if _last_logged is not None and (now - _last_logged).total_seconds() < LOG_INTERVAL_SECONDS:
-        return None
+    if AVERAGE_SECONDS > 0:
+        if _averager is None or _averager.window != AVERAGE_SECONDS:
+            _averager = Averager(AVERAGE_SECONDS)
+        averaged = _averager.add(now.timestamp(), position)
+        if averaged is None:
+            return None
+        position = {**averaged, "received_at": now.isoformat()}
 
-    _last_logged = now
     insert_position(position)
     LOG.debug(
         "Position %.6f, %.6f from %s",

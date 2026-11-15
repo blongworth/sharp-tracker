@@ -55,6 +55,28 @@ alert when data stops arriving.
 
 The map shows an Esri Ocean bathymetric basemap, seamarks, a 1-degree graticule, the ship track, the vessel position updated over SSE, and current NES-LTER waypoints with a line to the nearest one.
 
+## Averaging
+
+GPS receivers send fixes at 1 Hz. Both the desktop collector and the Pico
+average them into windows of `AVERAGE_SECONDS` (default 60) aligned to the UTC
+clock (12:00:00–12:00:59, 12:01:00–…), and store or send one fix per window:
+
+- `fix_time` is the window midpoint (12:00:30); `received_at` is when the
+  window closed (the first fix of the next window).
+- Position and altitude are means; speed is the mean SOG; course is the
+  direction of the mean velocity vector, so 359° and 1° average to 0°.
+- Quality and satellite count are the worst seen in the window.
+- `sentence_type` is `AVG` and `raw` summarizes the window instead of holding an
+  NMEA sentence, e.g. `AVG 60s n=58 2026-11-15T12:00:00Z/2026-11-15T12:01:00Z`.
+- A GGA/RMC pair for the same second counts once.
+
+`AVERAGE_SECONDS=0` stores every fix as received. The averaging code is
+`sharp_tracker/averaging.py`; the Pico runs the same file.
+
+Because fixes now arrive once a minute, the map flags the feed stale only when
+the newest fix is older than `STALE_AFTER_SECONDS` (default 180, about three
+windows). Raise it if you use a longer averaging window.
+
 ## Test the whole system locally
 
 With a fake NMEA source, everything on one laptop:
@@ -136,8 +158,9 @@ levels instead of TTL, add a level shifter between them.
    - `adafruit_requests.mpy`
    - `adafruit_connection_manager.mpy`
    - `adafruit_ntp.mpy`
-3. Copy `firmware/pico_nmea_tracker/code.py` and `firmware/pico_nmea_tracker/nmea_min.py`
-   to the root of `CIRCUITPY`.
+3. Copy `code.py`, `nmea_min.py`, and `fixes.py` from
+   `firmware/pico_nmea_tracker/`, plus `sharp_tracker/averaging.py` (shared with
+   the desktop collector), to the root of `CIRCUITPY`.
 4. Copy `firmware/pico_nmea_tracker/settings.toml.example` to `CIRCUITPY/settings.toml`
    and fill in your WiFi credentials, `TRACKER_API_URL`, and `TRACKER_INGEST_TOKEN`
    (the same ingest URL/token used by the desktop collector above). `settings.toml`
@@ -145,15 +168,38 @@ levels instead of TTL, add a level shifter between them.
 
 ### Use
 
-The Pico runs `code.py` automatically on boot and whenever `CIRCUITPY` is
-reconnected. Open a serial console (e.g. `screen /dev/tty.usbmodemXXXX 115200`,
-or the Mu editor's serial pane) to watch it connect to WiFi, sync its clock over
-NTP, and log each parsed fix as it batches and POSTs positions to
-`/positions/batch`. If the ingest API is unreachable, positions queue in RAM (up
-to `MAX_BUFFER`, oldest dropped first) and resume sending once connectivity
-returns; any other unhandled error restarts the whole bridge after 5 seconds
-rather than requiring a manual reset. Tune `BATCH_SIZE`/`FLUSH_SECONDS` in
-`settings.toml` to trade off POST frequency against position latency.
+The Pico runs `code.py` automatically on boot. Open a serial console (e.g.
+`screen /dev/tty.usbmodemXXXX 115200`, or the Mu editor's serial pane) to watch
+it connect, set its clock, and log each fix.
+
+- **Clock:** set from NTP if reachable, otherwise from the GPS (first valid RMC),
+  and re-set from GPS hourly. No fixes are logged until the clock is known, so
+  `received_at` is never a bogus 2000-01-01.
+- **Averaging:** 1 Hz fixes are averaged into UTC-aligned windows of
+  `AVERAGE_SECONDS` (default 60), same as the desktop collector (see
+  "Averaging" above).
+- **Sending:** fixes are POSTed in batches of `BATCH_SIZE` to `/positions/batch`.
+  Sends back off (up to 60 s) while they fail; WiFi is reconnected in the
+  background every 30 s, and logging continues throughout.
+- **Outages:** unsent fixes wait in RAM: up to `MAX_BUFFER` (default 500, about
+  8 hours of 1-minute averages), or fewer if free memory drops below `MIN_FREE_BYTES`. When
+  full, the oldest fixes are dropped. After the link returns, the newest fixes
+  are sent first so the map catches up, then the rest, a few batches per cycle.
+  There is no on-board storage: fixes still in RAM are lost if the board
+  reboots or loses power. For longer outages, use the desktop collector (which
+  logs every fix to SQLite) or add storage to the Pico later.
+- **Watchdog:** if the main loop hangs for `WATCHDOG_SECONDS` (default 8; 0
+  disables), the board reboots. Any other unexpected error also reboots after
+  5 s.
+
+### Testing
+
+The firmware's logic (`nmea_min.py`, `fixes.py`) is plain Python and is
+unit-tested on a laptop (`tests/test_pico.py`). `tests/test_pico_sim.py` runs
+the real `code.py` against simulated hardware: a fake UART, WiFi, server,
+clock, and memory. It covers server and WiFi outages, the RAM limits, the GPS
+clock, and NTP. It can't prove the CircuitPython APIs behave as stubbed, so do
+a smoke test on a real board before deploying.
 
 ## Database configuration
 
@@ -208,7 +254,8 @@ DATABASE_URL=postgresql+psycopg://user:password@host:5432/dbname
 TRACKER_API_URL=https://your-web-service.up.railway.app
 TRACKER_INGEST_TOKEN=change-me
 COLLECT=1                 # same as --collect
-LOG_INTERVAL_SECONDS=5
+AVERAGE_SECONDS=60          # 0 = store every fix
+STALE_AFTER_SECONDS=180     # map flags the feed stale past this fix age
 LIVE_HOST=127.0.0.1
 LIVE_PORT=8090
 LIVE_REFRESH_SECONDS=10

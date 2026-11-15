@@ -40,6 +40,10 @@ LOG = logging.getLogger(__name__)
 
 LIVE_DIR = Path(__file__).parent / "static"
 LIVE_REFRESH_SECONDS = float(os.getenv("LIVE_REFRESH_SECONDS", "10"))
+# The map flags the feed stale when the newest fix is older than this. Fixes
+# arrive once per averaging window (AVERAGE_SECONDS, default 60) and are
+# stamped at its midpoint, so ~3 windows avoids false alarms from one gap.
+STALE_AFTER_SECONDS = float(os.getenv("STALE_AFTER_SECONDS", "180"))
 WAYPOINTS_URL = "https://nes-lter-api.whoi.edu/api/stations/file.csv"
 
 
@@ -95,7 +99,12 @@ async def _position_stream() -> AsyncIterator[str]:
         rows = await asyncio.to_thread(latest_positions, 2)
         row = rows[0] if rows else None
         if row:
-            yield f"data: {json.dumps({**_compact_position(row), 'heading': _heading(row, rows[1] if len(rows) > 1 else None)})}\n\n"
+            payload = {
+                **_compact_position(row),
+                "heading": _heading(row, rows[1] if len(rows) > 1 else None),
+                "stale_after": STALE_AFTER_SECONDS,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
         else:
             # SSE comment: keeps the connection alive while the table is empty.
             yield ": waiting for first position\n\n"
