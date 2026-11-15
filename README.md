@@ -80,26 +80,57 @@ Because fixes now arrive once a minute, the map flags the feed stale only when
 the newest fix is older than `STALE_AFTER_SECONDS` (default 180, about three
 windows). Raise it if you use a longer averaging window.
 
-## Test the whole system locally
+## Run without Railway
 
-With a fake NMEA source, everything on one laptop:
+Everything runs on laptops with SQLite; Railway is only "the shore laptop in
+the cloud". For quick tests, set `AVERAGE_SECONDS=10` so a fix appears every
+10 s instead of every minute.
 
-```bash
-python scripts/simulate_nmea_source.py --host 127.0.0.1 --port 4000     # terminal 1
-NMEA_SOURCE=tcp NMEA_HOST=127.0.0.1 NMEA_PORT=4000 uv run sharp-tracker --collect   # terminal 2
-```
-
-To try ship-to-shore forwarding, add a second instance with its own database
-(on another laptop, use its IP and `--host 0.0.0.0` on the shore side):
+**One laptop, fake GPS** (the simulator sends 1 Hz GGA + RMC at 10 kn, 045°):
 
 ```bash
-DATABASE_PATH=data/shore.sqlite3 uv run sharp-tracker --port 8090                     # "shore"
-DATABASE_PATH=data/ship.sqlite3 NMEA_SOURCE=tcp NMEA_HOST=127.0.0.1 NMEA_PORT=4000 \
-  TRACKER_API_URL=http://127.0.0.1:8090 uv run sharp-tracker --collect --port 8091      # "ship"
+uv run python scripts/simulate_nmea_source.py --port 4000                          # terminal 1
+NMEA_SOURCE=tcp NMEA_HOST=127.0.0.1 NMEA_PORT=4000 AVERAGE_SECONDS=10 \
+  uv run sharp-tracker --collect                                                    # terminal 2
+open http://127.0.0.1:8090
 ```
 
-Stop the shore instance for a while and restart it: the ship keeps logging and
-catches the shore up when it returns.
+**One laptop, USB GPS:** `NMEA_SOURCE=serial NMEA_SERIAL_PORT=/dev/tty.usbserial-XXXX
+NMEA_SERIAL_BAUD=9600 uv run sharp-tracker --collect` (many modern GPS modules
+default to 9600 baud; marine NMEA 0183 is usually 4800).
+
+**Ship and shore on two laptops** (same LAN or WiFi):
+
+```bash
+# shore laptop: find its address with `ipconfig getifaddr en0` (macOS)
+TRACKER_INGEST_TOKEN=test-token uv run sharp-tracker --host 0.0.0.0
+# ship laptop
+NMEA_SOURCE=tcp NMEA_HOST=127.0.0.1 NMEA_PORT=4000 AVERAGE_SECONDS=10 \
+  TRACKER_API_URL=http://<shore-ip>:8090 TRACKER_INGEST_TOKEN=test-token \
+  uv run sharp-tracker --collect
+```
+
+macOS may ask the shore laptop to allow incoming connections. Each laptop has
+its own map; the ship's works with no network at all. On one laptop, give the
+two instances different `DATABASE_PATH`s and ports. Stop the shore instance for
+a while and restart it: the ship keeps logging and catches the shore up.
+
+### Getting the log off the ship
+
+The collector's SQLite database runs in WAL mode, so recent rows may live in
+`positions.sqlite3-wal` rather than the main file. Copying `positions.sqlite3`
+alone can miss them. Use SQLite's online backup instead; it is safe while the
+collector is running:
+
+```bash
+sqlite3 data/positions.sqlite3 ".backup 'cruise-2026-11.sqlite3'"
+# without the sqlite3 CLI:
+uv run python -c "import sqlite3; sqlite3.connect('data/positions.sqlite3').backup(sqlite3.connect('cruise-2026-11.sqlite3'))"
+```
+
+For a CSV: `sqlite3 -header -csv data/positions.sqlite3 "select fix_time,
+latitude, longitude, speed_knots, course_deg, raw from positions order by
+fix_time" > track.csv`.
 
 ## Ship-network collector
 
@@ -194,6 +225,32 @@ it connect, set its clock, and log each fix.
 - **Watchdog:** if the main loop hangs for `WATCHDOG_SECONDS` (default 8; 0
   disables), the board reboots. Any other unexpected error also reboots after
   5 s.
+
+### Bench test on hardware
+
+1. On a laptop on the same WiFi: `TRACKER_INGEST_TOKEN=test-token uv run
+   sharp-tracker --host 0.0.0.0` (see "Run without Railway").
+2. In `settings.toml`: `TRACKER_API_URL = "http://<laptop-ip>:8090"` (plain HTTP
+   is fine on a LAN), the same token, `AVERAGE_SECONDS = "10"` for quick
+   feedback, `NMEA_SERIAL_BAUD` to match the GPS, and `WATCHDOG_SECONDS = "0"`
+   while you are working in the REPL (set it back to 8 afterwards).
+3. GPS source: a GPS module (TX → GP1, GND → GND, power per the module), or the
+   simulator through a 3.3 V USB-serial adapter (adapter TX → GP1, GND → GND):
+   `uv run python scripts/simulate_nmea_source.py --serial /dev/tty.usbserial-XXXX --baud 4800`.
+4. Watch the serial console (`screen /dev/tty.usbmodemXXXX 115200`): expect
+   `Clock set from GPS` (or NTP), then a `Fix:` line per window, and the fix on
+   the laptop's map within a few seconds.
+
+Then break things on purpose:
+
+| Do this | Expect |
+| --- | --- |
+| Stop the laptop server ~5 min, restart | `Send failed` with growing gaps (≤ 60 s); after restart the newest fixes arrive first, then the backlog; no gaps or duplicates in the laptop DB |
+| Turn off the WiFi access point ~5 min | `WiFi unavailable` about every 30–60 s, fixes keep queuing, no reboot; everything arrives after WiFi returns |
+| Shield the GPS antenna / unplug the GPS mid-window | No new `Fix:` lines; the partial window is still sent at the window's end with a lower `n` |
+| Boot with no NTP and the GPS indoors | Nothing logged until the first valid RMC sets the clock |
+| `WATCHDOG_SECONDS = "8"`, then add `time.sleep(20)` inside the main loop | Board reboots after ~8 s (remove the sleep afterwards) |
+| After a long outage, in the REPL: `import gc; gc.collect(); gc.mem_free()` | Comfortably above `MIN_FREE_BYTES`; otherwise lower `MAX_BUFFER` |
 
 ### Testing
 
