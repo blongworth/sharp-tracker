@@ -188,6 +188,20 @@ DATABASE_PATH=data/positions.sqlite3
 
 For Railway, attach Postgres. Railway will provide `DATABASE_URL`; the app automatically uses it. Both the ingest API and the live map should point at the same Postgres database.
 
+## Tests and local Postgres
+
+```bash
+uv run pytest                                   # SQLite; Postgres variants are skipped
+docker compose up -d --wait postgres            # throwaway local Postgres (compose.yaml)
+TEST_DATABASE_URL=postgresql://sharp:sharp@127.0.0.1:5432/sharp_tracker_test uv run pytest
+```
+
+The compose database is also handy for running the app against Postgres the
+way Railway does:
+`DATABASE_URL=postgresql://sharp:sharp@127.0.0.1:5432/sharp_tracker uv run sharp-tracker-live`.
+Tests drop all tables in `TEST_DATABASE_URL`, so it must be a localhost database
+with `test` in its name.
+
 ## Railway deployment notes
 
 `Procfile` includes three process types:
