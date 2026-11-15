@@ -151,6 +151,7 @@ function styleFor(base, seamarks) {
 }
 
 let track = [];
+let lastTrackKey = null;  // fix last appended to `track` (see applyPosition)
 let ship = null;
 let waypoints = [];
 let nearestWp = null;
@@ -318,9 +319,16 @@ function applyPosition(p) {
     ship.setLngLat([p.lon, p.lat]);
   }
   followShip(p);
-  track.push([p.lon, p.lat]);
-  if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
-  map.getSource("track").setData(trackGeoJSON());
+  // The SSE stream re-sends the latest stored fix every refresh, and its first
+  // message repeats the last point of the initial window: only extend the
+  // track with a fix that isn't already its last point.
+  const fixKey = p.t + "|" + p.lon + "|" + p.lat;
+  if (fixKey !== lastTrackKey) {
+    lastTrackKey = fixKey;
+    track.push([p.lon, p.lat]);
+    if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
+    map.getSource("track").setData(trackGeoJSON());
+  }
   setWpTrack();
 }
 
