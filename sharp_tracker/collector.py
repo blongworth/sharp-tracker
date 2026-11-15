@@ -28,10 +28,13 @@ LOG_INTERVAL_SECONDS = float(os.getenv("LOG_INTERVAL_SECONDS", "5"))
 BATCH_SIZE = 50
 IDLE_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 60.0
+# Repeat the 'source unavailable' warning every N failed attempts (~5 min at 5 s).
+SOURCE_WARNING_EVERY = 60
 
 LATEST_NAV: dict[str, Any] = {}
 _forwarder_thread: threading.Thread | None = None
 _last_logged: datetime | None = None
+_source_failures = 0
 
 
 class ForwardError(Exception):
@@ -51,34 +54,70 @@ def collect_forever(
     source = os.getenv("NMEA_SOURCE", "serial" if os.getenv("NMEA_SERIAL_PORT") else "tcp").lower()
     api_url = os.getenv("TRACKER_API_URL")
     sink = f"local database + {api_url}" if api_url else "local database"
+
+    # Config errors fail once, loudly, instead of retrying forever.
+    if source == "tcp":
+        host = host or os.getenv("NMEA_HOST", DEFAULT_HOST)
+        port = port or int(os.getenv("NMEA_PORT", str(DEFAULT_PORT)))
+        LOG.info("Starting TCP NMEA collector for %s:%s -> %s", host, port, sink)
+    elif source == "serial":
+        if not os.getenv("NMEA_SERIAL_PORT"):
+            raise ValueError("NMEA_SOURCE=serial requires NMEA_SERIAL_PORT")
+        LOG.info("Starting serial NMEA collector for %s -> %s", os.environ["NMEA_SERIAL_PORT"], sink)
+    else:
+        raise ValueError("NMEA_SOURCE must be 'tcp' or 'serial'")
+
     if api_url:
         _ensure_forwarder(api_url)
 
+    global _source_failures
+    _source_failures = 0
     while True:
         try:
             if source == "serial":
                 _collect_serial_once()
-            elif source == "tcp":
-                host = host or os.getenv("NMEA_HOST", DEFAULT_HOST)
-                port = port or int(os.getenv("NMEA_PORT", str(DEFAULT_PORT)))
-                LOG.info("Starting TCP NMEA collector for %s:%s -> %s", host, port, sink)
-                _collect_tcp_once(host, port)
             else:
-                raise ValueError("NMEA_SOURCE must be 'tcp' or 'serial'")
+                _collect_tcp_once(host, port)
         except KeyboardInterrupt:
             raise
+        except OSError as exc:
+            # Expected at sea: source unreachable or closed, serial device unplugged.
+            # One line on the first failure, then a reminder every ~5 min, not a traceback every 5 s.
+            _source_failures += 1
+            if _source_failures == 1 or _source_failures % SOURCE_WARNING_EVERY == 0:
+                LOG.warning(
+                    "NMEA source unavailable (%s); retrying every %.0fs (%d failed attempts)",
+                    exc,
+                    reconnect_seconds,
+                    _source_failures,
+                )
+            else:
+                LOG.debug("NMEA source still unavailable (%s)", exc)
         except Exception:
-            LOG.exception("NMEA collector disconnected; reconnecting in %.1fs", reconnect_seconds)
-            time.sleep(reconnect_seconds)
+            _source_failures += 1
+            LOG.exception("NMEA collector error; reconnecting in %.0fs", reconnect_seconds)
+        time.sleep(reconnect_seconds)
+
+
+def _source_connected(description: str) -> None:
+    """Log the (re)connection and reset the failure count."""
+    global _source_failures
+    if _source_failures:
+        LOG.info("Connected to %s after %d failed attempts", description, _source_failures)
+    else:
+        LOG.info("Connected to %s", description)
+    _source_failures = 0
 
 
 def _collect_tcp_once(host: str, port: int) -> None:
     with socket.create_connection((host, port), timeout=15) as sock:
-        LOG.info("Connected to TCP NMEA source %s:%s", host, port)
+        _source_connected(f"TCP NMEA source {host}:{port}")
         sock.settimeout(None)
         file = sock.makefile("r", encoding="ascii", errors="ignore", newline="\n")
         for line in file:
             process_nmea_line(line)
+    # EOF: without this a source that accepts then closes would be re-dialed in a tight loop.
+    raise ConnectionError("source closed the connection")
 
 
 def _collect_serial_once() -> None:
@@ -86,8 +125,9 @@ def _collect_serial_once() -> None:
     baud = int(os.getenv("NMEA_SERIAL_BAUD", str(DEFAULT_SERIAL_BAUD)))
     timeout = float(os.getenv("NMEA_SERIAL_TIMEOUT", "5"))
 
-    LOG.info("Starting serial NMEA collector for %s at %s baud", serial_port, baud)
+    # serial.SerialException subclasses OSError, so a missing device is retried quietly.
     with serial.Serial(serial_port, baudrate=baud, timeout=timeout) as ser:
+        _source_connected(f"serial NMEA source {serial_port} at {baud} baud")
         while True:
             raw = ser.readline()
             if not raw:

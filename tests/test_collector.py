@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -112,3 +113,82 @@ def test_forward_against_real_ingest_api(engine, monkeypatch):
     assert get_forward_cursor() == 3
     assert unsent_positions(get_forward_cursor()) == []
     assert len(stored(engine)) == 3  # resend into the same DB was idempotent
+
+
+def run_loop(monkeypatch, outcomes, source="tcp"):
+    """Run collect_forever over canned per-attempt outcomes; stops when they run out."""
+    attempts = iter(outcomes)
+
+    def attempt(*args):
+        outcome = next(attempts, KeyboardInterrupt())
+        if isinstance(outcome, BaseException):
+            raise outcome
+        outcome()  # e.g. a successful connection that later drops
+
+    monkeypatch.setenv("NMEA_SOURCE", source)
+    monkeypatch.setenv("NMEA_SERIAL_PORT", "/dev/fake")
+    monkeypatch.delenv("TRACKER_API_URL", raising=False)
+    monkeypatch.setattr(collector, "_collect_tcp_once", attempt)
+    monkeypatch.setattr(collector, "_collect_serial_once", attempt)
+    monkeypatch.setattr(collector.time, "sleep", lambda s: None)
+    with pytest.raises(KeyboardInterrupt):
+        collector.collect_forever(host="127.0.0.1", port=4000)
+
+
+def warnings_logged(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+
+def test_unreachable_source_warns_once_then_periodically(monkeypatch, caplog):
+    caplog.set_level("DEBUG", logger="sharp_tracker.collector")
+    run_loop(monkeypatch, [ConnectionRefusedError("refused")] * 130)
+    msgs = warnings_logged(caplog)
+    # First failure, then every SOURCE_WARNING_EVERY (60): attempts 1, 60, 120.
+    assert len(msgs) == 3
+    assert "(1 failed attempts)" in msgs[0] and "(120 failed attempts)" in msgs[2]
+    assert not any(r.exc_info for r in caplog.records)  # no tracebacks
+    assert sum("Starting TCP" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_reconnect_resets_failure_count(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="sharp_tracker.collector")
+    def connect():
+        collector._source_connected("TCP NMEA source test")
+
+    lost = ConnectionError("source closed the connection")
+    run_loop(
+        monkeypatch, [ConnectionRefusedError("refused")] * 3 + [connect, lost, lost]
+    )
+    infos = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert "Connected to TCP NMEA source test after 3 failed attempts" in infos
+    # After the reconnect, the next outage warns again from attempt 1.
+    assert warnings_logged(caplog)[-1].endswith("(1 failed attempts)")
+
+
+def test_unexpected_error_keeps_traceback(monkeypatch, caplog):
+    run_loop(monkeypatch, [RuntimeError("bug")])
+    assert any(r.exc_info for r in caplog.records if r.levelname == "ERROR")
+
+
+def test_bad_config_fails_once(monkeypatch):
+    monkeypatch.setenv("NMEA_SOURCE", "carrier-pigeon")
+    with pytest.raises(ValueError, match="NMEA_SOURCE"):
+        collector.collect_forever()
+    monkeypatch.setenv("NMEA_SOURCE", "serial")
+    monkeypatch.delenv("NMEA_SERIAL_PORT", raising=False)
+    with pytest.raises(ValueError, match="NMEA_SERIAL_PORT"):
+        collector.collect_forever()
+
+
+def test_tcp_eof_is_a_disconnect(monkeypatch):
+    """A source that accepts then closes must go through the retry delay."""
+    import socket
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    threading.Thread(target=lambda: server.accept()[0].close(), daemon=True).start()
+    with pytest.raises(ConnectionError, match="closed"):
+        collector._collect_tcp_once("127.0.0.1", port)
+    server.close()
