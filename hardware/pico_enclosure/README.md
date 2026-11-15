@@ -18,7 +18,11 @@ The box is splash-resistant at most. It has no gasket, so mount it somewhere dry
 ## Files
 
 `enclosure.scad` is a parametric OpenSCAD model. Set `part` to `"box"` or `"lid"`
-and export each one to STL. Customizer groups:
+and export each one to STL. `"pico"` and `"isolator"` render reference models of
+the Pico W and the perfboard NMEA input (U1, R1, R2, D1, C1, the GPS screw terminal
+and the Pico header). They are not for printing. `"assembly"` shows both boards on
+their standoffs inside the box with a see-through lid, for checking fit and
+headroom. Set `pico_headers = true` to show soldered pin headers. Customizer groups:
 `[Box]`, `[Lid]`, `[Pico W]`, `[Interface board]`, `[Ports]`, `[Mounting ears]`.
 
 **Measure your panel connectors before you print.** USB-C panel-mount flanges
