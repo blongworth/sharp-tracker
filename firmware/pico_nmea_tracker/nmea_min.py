@@ -19,10 +19,10 @@ def parse_line(line):
 
     fields = raw[1:].split("*")[0].split(",")
     header = fields[0]
-    if len(header) < 6:
+    if len(header) < 5:  # e.g. "GPGGA" ("$" already stripped)
         return None, None
-    talker = header[1:3]
-    sentence_type = header[3:6]
+    talker = header[0:2]
+    sentence_type = header[2:5]
 
     try:
         if sentence_type == "VTG":
