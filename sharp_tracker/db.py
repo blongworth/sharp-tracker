@@ -18,6 +18,7 @@ from sqlalchemy import (
     Table,
     Text,
     create_engine,
+    event,
     select,
     text,
 )
@@ -95,6 +96,11 @@ def db_label() -> str:
 def get_engine() -> Engine:
     """Shared engine; created (and schema-checked) once per process."""
     engine = create_engine(database_url(), pool_pre_ping=True)
+    if engine.dialect.name == "sqlite":
+        # WAL lets the map and forwarder read while the collector writes
+        # (default journal mode blocks writers during reads). Lock waits use
+        # the sqlite3 driver's default 5 s timeout.
+        event.listen(engine, "connect", _sqlite_wal)
     metadata.create_all(engine)
     try:
         with engine.begin() as conn:
@@ -105,6 +111,10 @@ def get_engine() -> Engine:
             "duplicate (received_at, raw) rows. Delete the duplicates (keeping the lowest id) and restart."
         ) from exc
     return engine
+
+
+def _sqlite_wal(dbapi_connection: Any, _record: Any) -> None:
+    dbapi_connection.execute("PRAGMA journal_mode=WAL")
 
 
 def _insert(engine: Engine, table: Table):

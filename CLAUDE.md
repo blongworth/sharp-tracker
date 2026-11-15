@@ -23,7 +23,13 @@ uvicorn sharp_tracker.api:app --reload --port 8000       # ingest API only
 curl http://127.0.0.1:8000/health                       # ingest API health check
 ```
 
-There is no test suite, linter, or type checker configured in this repo — don't invent commands for them.
+```bash
+uv run pytest                                   # SQLite only; Postgres variants skip
+docker compose up -d --wait postgres            # local Postgres (compose.yaml)
+TEST_DATABASE_URL=postgresql://sharp:sharp@127.0.0.1:5432/sharp_tracker_test uv run pytest   # SQLite + Postgres
+```
+
+Tests drop all tables in `TEST_DATABASE_URL`; `tests/conftest.py` refuses any URL that isn't localhost with `test` in the database name. There is no linter or type checker configured in this repo; don't invent commands for them.
 
 ### Full local end-to-end run (4 terminals)
 
@@ -32,15 +38,15 @@ There is no test suite, linter, or type checker configured in this repo — don'
 3. Collector in POST mode (env: `NMEA_SOURCE=tcp NMEA_HOST=127.0.0.1 NMEA_PORT=4000 TRACKER_API_URL=http://127.0.0.1:8000`): `python -m sharp_tracker.collector`
 4. Live map: `uv run sharp-tracker-live`
 
-If `TRACKER_API_URL` is unset, the collector writes straight to the configured DB instead of POSTing.
+The collector always logs fixes to its local DB; if `TRACKER_API_URL` is set it also forwards them.
 
 ## Architecture
 
 ```
 Ship network (NMEA TCP 192.168.20.215:4000 or serial GPS/AIS)
         v
-  collector (sharp_tracker/collector.py)  -- parses NMEA, batches, POSTs
-        v HTTPS POST /positions[/batch]
+  collector (sharp_tracker/collector.py)  -- parses NMEA, logs to local SQLite, forwards unsent rows
+        v HTTPS POST /positions/batch
   ingest API (sharp_tracker/api.py)       -- FastAPI, writes to DB
         v
   DB (sharp_tracker/db.py: SQLAlchemy, SQLite or Postgres)
@@ -59,8 +65,8 @@ Railway does not split a multi-process `Procfile` into services automatically �
 ### Module responsibilities
 
 - `sharp_tracker/nmea.py` — pure parsing: one `parse_line()` call turns a raw NMEA sentence into `(navigation, position)` dicts via `pynmea2`. No I/O. `navigation` carries speed/course from sentences like VTG that lack a position (e.g. GGA); `collector.py` merges the last-seen nav values onto position-bearing fixes so heading survives even when a GGA fix has no COG of its own.
-- `sharp_tracker/collector.py` — owns the read loop (TCP or serial, chosen by `NMEA_SOURCE`/`NMEA_SERIAL_PORT`), dedupes GGA/RMC pairs reporting the same fix within 1s, and either inserts directly to the DB or queues positions for a background sender thread that batches POSTs to `TRACKER_API_URL` (falls back to direct local DB insert if the API is unreachable after 2 retries).
-- `sharp_tracker/db.py` — single source of truth for the `positions` table schema and DB URL resolution. `database_url()` normalizes Railway's `postgres://`/`postgresql://` to `postgresql+psycopg://` since SQLAlchemy's psycopg3 driver requires that scheme. `get_engine()` is process-wide (`lru_cache`) and calls `metadata.create_all` so schema issues fail loudly at startup rather than on first write.
+- `sharp_tracker/collector.py` — owns the read loop (TCP or serial, chosen by `NMEA_SOURCE`/`NMEA_SERIAL_PORT`), keeps at most one fix per `LOG_INTERVAL_SECONDS` (default 5; this also collapses GGA/RMC pairs), and always inserts kept fixes into the local DB. When `TRACKER_API_URL` is set, a forwarder thread reads rows past the `forward_state` cursor and POSTs them in batches, advancing the cursor only on a 201 and backing off (up to 60 s) while the API is unreachable. A fresh `TRACKER_API_URL` on an existing local DB backfills its whole history.
+- `sharp_tracker/db.py` — single source of truth for the `positions` table schema and DB URL resolution. `database_url()` normalizes Railway's `postgres://`/`postgresql://` to `postgresql+psycopg://` since SQLAlchemy's psycopg3 driver requires that scheme. `get_engine()` is process-wide (`lru_cache`) and calls `metadata.create_all` so schema issues fail loudly at startup rather than on first write. It also creates a unique index on `(received_at, raw)` (with raw SQL, so existing tables get it too); inserts use `ON CONFLICT DO NOTHING`, so resending a fix is always harmless. Stored times are UTC; reads tag SQLite's naive values as UTC. `forward_state` holds the collector's forwarding cursor (`get_forward_cursor`/`unsent_positions`/`mark_forwarded`).
 - `sharp_tracker/api.py` — thin ingest surface (`POST /positions`, `POST /positions/batch`), Bearer-token gated via `TRACKER_INGEST_TOKEN` (if unset, ingest is unauthenticated — fine for local dev, not for a public Railway URL).
 - `sharp_tracker/live.py` — dashboard backend: `GET /` serves the static page, `GET /track` is the SSE stream (polls the DB for the latest fix every `LIVE_REFRESH_SECONDS`, computes heading from COG or, if absent, the bearing between the last two fixes), `GET /api/positions` returns a decimated track window for initial page load, `GET /api/waypoints` proxies+caches current NES-LTER station coordinates from the public NES-LTER API for map display.
 - `sharp_tracker/run.py` — `sharp-tracker` entry point: starts the live dashboard (unless one is already answering on host/port) and the collector as subprocesses, and shuts both down together on Ctrl-C.
@@ -69,5 +75,5 @@ Railway does not split a multi-process `Procfile` into services automatically �
 
 ### Data flow details worth knowing before touching them
 
-- Every position row carries both `received_at` (when the collector/server saw it) and `fix_time` (parsed from the NMEA sentence's own date/time, may be null). Display code should prefer `fix_time` with `received_at` as fallback — this is exactly what `db.latest_position()`'s `display_time` field and `live.py`'s `_compact_position` do; keep new consumers consistent with that convention rather than reading `received_at` directly.
-- The collector's batching sender thread is the only writer path when `TRACKER_API_URL` is set — direct `insert_position` calls from the collector only happen when running collector-only against a local DB, or as the last-resort fallback after a batch POST fails twice.
+- Every position row carries both `received_at` (when the collector/server saw it) and `fix_time` (parsed from the NMEA sentence's own date/time, may be null). Display code should prefer `fix_time` with `received_at` as fallback — this is exactly what `db.latest_positions()`'s `display_time` field and `live.py`'s `_compact_position` do; keep new consumers consistent with that convention rather than reading `received_at` directly.
+- The collector's local DB is the source of truth on the ship: every kept fix is inserted there first, and the server only ever receives copies via the forwarder. Never make the forwarder delete or modify local rows.

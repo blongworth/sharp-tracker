@@ -139,6 +139,12 @@ def legacy_db(tmp_path, monkeypatch):
     db.get_engine.cache_clear()
 
 
+def test_sqlite_uses_wal(legacy_db):
+    db.get_engine()
+    with sqlite3.connect(legacy_db) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
 def test_existing_table_gets_unique_index(legacy_db):
     with sqlite3.connect(legacy_db) as conn:
         conn.execute(LEGACY_SCHEMA)
