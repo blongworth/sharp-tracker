@@ -25,7 +25,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .db import fetch_positions_df, get_engine
+from .db import fetch_positions_df, get_engine, latest_positions
 
 LIVE_DIR = Path(__file__).parent / "static"
 LIVE_REFRESH_SECONDS = float(os.getenv("LIVE_REFRESH_SECONDS", "10"))
@@ -73,7 +73,7 @@ def _heading(row: dict, prev: dict | None) -> float | None:
 async def _position_stream() -> AsyncIterator[str]:
     """Yield the latest position (and calculated heading) every LIVE_REFRESH_SECONDS."""
     while True:
-        rows = await asyncio.to_thread(_latest_rows)
+        rows = await asyncio.to_thread(latest_positions, 2)
         row = rows[0] if rows else None
         if row:
             yield f"data: {json.dumps({**_compact_position(row), 'heading': _heading(row, rows[1] if len(rows) > 1 else None)})}\n\n"
@@ -81,24 +81,6 @@ async def _position_stream() -> AsyncIterator[str]:
             # SSE comment: keeps the connection alive while the table is empty.
             yield ": waiting for first position\n\n"
         await asyncio.sleep(LIVE_REFRESH_SECONDS)
-
-
-def _latest_rows(n: int = 2) -> list[dict]:
-    """The n most recent positions, newest first, as dicts."""
-    engine = get_engine()
-    from sqlalchemy import select
-
-    from .db import positions as positions_table
-
-    stmt = select(positions_table).order_by(positions_table.c.received_at.desc(), positions_table.c.id.desc()).limit(n)
-    with engine.connect() as conn:
-        rows = conn.execute(stmt).mappings().all()
-    result = []
-    for r in rows:
-        data = dict(r)
-        data["display_time"] = data.get("fix_time") or data.get("received_at")
-        result.append(data)
-    return result
 
 
 @lru_cache(maxsize=1)

@@ -20,7 +20,7 @@ def sample_lines() -> list[str]:
 
 
 @pytest.fixture
-def db(tmp_path, monkeypatch):
+def engine(tmp_path, monkeypatch):
     """Fresh SQLite DB per test; returns the engine."""
     from sharp_tracker import db as db_module
 
