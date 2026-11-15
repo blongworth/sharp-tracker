@@ -26,6 +26,9 @@ DEFAULT_SERIAL_BAUD = 4800
 # Average fixes into UTC-aligned windows of this many seconds (see averaging.py).
 # 0 stores every fix as received, including both halves of a GGA/RMC pair.
 AVERAGE_SECONDS = int(os.getenv("AVERAGE_SECONDS", "60"))
+# TCP read timeout: how often the read loop wakes to close a due averaging
+# window when no data (or no valid fix) is arriving.
+SOURCE_POLL_SECONDS = 1.0
 BATCH_SIZE = 50
 IDLE_SECONDS = 1.0
 MAX_BACKOFF_SECONDS = 60.0
@@ -97,6 +100,8 @@ def collect_forever(
         except Exception:
             _source_failures += 1
             LOG.exception("NMEA collector error; reconnecting in %.0fs", reconnect_seconds)
+        # Source down: still close a window whose end has passed.
+        close_due_window()
         time.sleep(reconnect_seconds)
 
 
@@ -113,10 +118,22 @@ def _source_connected(description: str) -> None:
 def _collect_tcp_once(host: str, port: int) -> None:
     with socket.create_connection((host, port), timeout=15) as sock:
         _source_connected(f"TCP NMEA source {host}:{port}")
-        sock.settimeout(None)
-        file = sock.makefile("r", encoding="ascii", errors="ignore", newline="\n")
-        for line in file:
-            process_nmea_line(line)
+        sock.settimeout(SOURCE_POLL_SECONDS)
+        partial = b""
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:  # quiet source: still close a due window
+                close_due_window()
+                continue
+            if not chunk:
+                break
+            *lines, partial = (partial + chunk).split(b"\n")
+            for line in lines:
+                process_nmea_line(line.decode("ascii", errors="ignore"))
+            # Data may keep flowing with no valid fix (RMC status V), so add()
+            # alone would never close the window.
+            close_due_window()
     # EOF: without this a source that accepts then closes would be re-dialed in a tight loop.
     raise ConnectionError("source closed the connection")
 
@@ -131,10 +148,13 @@ def _collect_serial_once() -> None:
         _source_connected(f"serial NMEA source {serial_port} at {baud} baud")
         while True:
             raw = ser.readline()
-            if not raw:
+            if raw:
+                process_nmea_line(raw.decode("ascii", errors="ignore"))
+            else:
                 LOG.debug("No serial data received within %.1fs", timeout)
-                continue
-            process_nmea_line(raw.decode("ascii", errors="ignore"))
+            # readline returns at least every `timeout` s, so a due window
+            # closes even when the GPS is quiet or has no valid fix.
+            close_due_window()
 
 
 def process_nmea_line(line: str, now: datetime | None = None) -> dict[str, Any] | None:
@@ -169,6 +189,26 @@ def process_nmea_line(line: str, now: datetime | None = None) -> dict[str, Any] 
             return None
         position = {**averaged, "received_at": now.isoformat()}
 
+    return _store(position)
+
+
+def close_due_window(now: datetime | None = None) -> dict[str, Any] | None:
+    """Store the open averaging window if its end has passed; returns the row.
+
+    The read loops call this between reads, so a window closes on time when
+    the GPS goes quiet or stops producing valid fixes, instead of waiting for
+    the next good fix.
+    """
+    if _averager is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    averaged = _averager.close_due(now.timestamp())
+    if averaged is None:
+        return None
+    return _store({**averaged, "received_at": now.isoformat()})
+
+
+def _store(position: dict[str, Any]) -> dict[str, Any]:
     insert_position(position)
     LOG.debug(
         "Position %.6f, %.6f from %s",

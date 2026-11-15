@@ -51,6 +51,19 @@ class Averager:
         self._accumulate(position)
         return done
 
+    def close_due(self, t):
+        """Close the open window if `t` (UTC epoch seconds) is past its end.
+
+        Call this periodically while waiting for input: if the GPS goes quiet
+        mid-window, the partial window is emitted on time instead of waiting
+        for the next fix. Returns the averaged position or None.
+        """
+        if self._start is None or t < self._start + self.window:
+            return None
+        done = self._result()
+        self._reset()
+        return done
+
     def _reset(self):
         self._start = None
         self._last_second = None

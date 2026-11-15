@@ -62,7 +62,10 @@ average them into windows of `AVERAGE_SECONDS` (default 60) aligned to the UTC
 clock (12:00:00–12:00:59, 12:01:00–…), and store or send one fix per window:
 
 - `fix_time` is the window midpoint (12:00:30); `received_at` is when the
-  window closed (the first fix of the next window).
+  window closed: at the first fix of the next window or, if the GPS goes quiet
+  or loses its fix, when the window's end passes (within about 1 s for TCP and
+  the Pico, `NMEA_SERIAL_TIMEOUT` for serial). A partial window shows its
+  sample count in `raw` (`n=30`). Windows with no valid fixes produce no row.
 - Position and altitude are means; speed is the mean SOG; course is the
   direction of the mean velocity vector, so 359° and 1° average to 0°.
 - Quality and satellite count are the worst seen in the window.

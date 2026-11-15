@@ -48,6 +48,7 @@ class World:
         self.server_up = True
         self.ntp_up = False
         self.mem_free = 100_000
+        self.gps = "fix"  # "fix", "no_fix" (talking, quality 0/status V), or "silent"
         self.posts: list[list[dict]] = []
         self.attempts = 0
         self.hooks: dict[int, callable] = {}
@@ -77,7 +78,9 @@ class World:
         if second in self.hooks:
             self.hooks.pop(second)(self)
         self.t += 1
-        return nmea_gen.sentences(second, self.rmc)
+        if self.gps == "silent":
+            return b""
+        return nmea_gen.sentences(second, self.rmc, valid=self.gps == "fix")
 
 
 def install_stubs(monkeypatch, world: World):
@@ -313,3 +316,20 @@ def test_default_one_minute_averaging(run_firmware):
     assert fixes[1]["raw"].startswith("AVG 60s n=60 ")
     assert fixes[0]["sentence_type"] == "AVG"
     assert fixes[1]["course_deg"] == pytest.approx(45.0)
+
+
+@pytest.mark.parametrize("gps", ["silent", "no_fix"])
+def test_window_closes_on_time_when_gps_stops(run_firmware, gps):
+    world = World(seconds=200)
+    world.hooks[90] = lambda w: setattr(
+        w, "gps", gps
+    )  # mid-way through the 12:01 window
+    run_firmware(world, AVERAGE_SECONDS="60")
+    fixes = [p for batch in world.posts for p in batch]
+    assert [p["fix_time"] for p in fixes] == [
+        "2026-11-15T12:00:30+00:00",
+        "2026-11-15T12:01:30+00:00",  # partial window still sent...
+    ]
+    assert "n=30 " in fixes[1]["raw"]
+    # ...at the window's end, not whenever a valid fix next appears.
+    assert fixes[1]["received_at"] == "2026-11-15T12:02:00+00:00"

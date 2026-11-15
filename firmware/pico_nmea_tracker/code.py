@@ -182,6 +182,14 @@ def flush(session, pending):
     return True
 
 
+def queue_fix(pending, position):
+    """Stamp received_at and add to the RAM buffer for sending."""
+    position["received_at"] = iso_utc_now()
+    if pending.add(position, free_memory()) and pending.dropped % 60 == 1:
+        print("RAM buffer full; dropped", pending.dropped, "oldest fixes so far")
+    print("Fix: {:.5f}, {:.5f} {}".format(position["latitude"], position["longitude"], position["raw"][:24]))
+
+
 def run():
     if not INGEST_URL:
         raise RuntimeError("TRACKER_API_URL must be set in settings.toml")
@@ -231,10 +239,14 @@ def run():
                     position = averager.add(epoch_now(), position)
                     if position is None:
                         continue  # window still filling
-                position["received_at"] = iso_utc_now()
-                if pending.add(position, free_memory()) and pending.dropped % 60 == 1:
-                    print("RAM buffer full; dropped", pending.dropped, "oldest fixes so far")
-                print("Fix: {:.5f}, {:.5f} {}".format(position["latitude"], position["longitude"], position["raw"][:24]))
+                queue_fix(pending, position)
+
+        # Close a due window even when the GPS is quiet or has no valid fix
+        # (data can keep flowing with RMC status V, so add() alone won't).
+        if averager and clock_is_set():
+            position = averager.close_due(epoch_now())
+            if position:
+                queue_fix(pending, position)
 
         now = time.monotonic()
         link_ok = retry_seconds == FLUSH_SECONDS

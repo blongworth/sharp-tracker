@@ -71,6 +71,60 @@ def test_averaging_stores_one_row_per_utc_window(engine, monkeypatch):
     )
 
 
+def test_close_due_window_stores_partial_window(engine, monkeypatch):
+    monkeypatch.setattr(collector, "AVERAGE_SECONDS", 60)
+    start = datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
+    for s in range(20):  # GPS goes quiet after 12:00:19
+        for line in nmea_gen.sentences(s, start=start).decode().splitlines():
+            collector.process_nmea_line(line, now=start + timedelta(seconds=s))
+    assert collector.close_due_window(now=start + timedelta(seconds=59)) is None
+    row = collector.close_due_window(
+        now=start + timedelta(seconds=60, milliseconds=500)
+    )
+    assert row["raw"].startswith("AVG 60s n=20 ")
+    (stored_row,) = stored(engine)
+    assert stored_row["received_at"] == start + timedelta(seconds=60, milliseconds=500)
+
+
+def test_close_due_window_without_averaging_is_noop(engine):
+    assert collector.close_due_window() is None
+
+
+def test_tcp_loop_closes_window_while_fix_is_lost(engine, monkeypatch):
+    """Real socket: one good fix, then a receiver with no fix that keeps talking.
+
+    add() never sees another valid fix, so only close_due_window() can store
+    the window, and it must do so before the connection ends.
+    """
+    import socket
+    import time
+
+    monkeypatch.setattr(collector, "AVERAGE_SECONDS", 1)
+    monkeypatch.setattr(collector, "SOURCE_POLL_SECONDS", 0.1)
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    rows_before_close = []
+
+    def source():
+        conn, _ = server.accept()
+        with conn:
+            conn.sendall(nmea_gen.sentences(0))  # one valid fix
+            for s in range(1, 13):  # ~2.4 s of no-fix chatter
+                time.sleep(0.2)
+                conn.sendall(nmea_gen.sentences(s, valid=False))
+            rows_before_close.extend(latest_positions(10))
+
+    thread = threading.Thread(target=source, daemon=True)
+    thread.start()
+    with pytest.raises(ConnectionError, match="closed"):
+        collector._collect_tcp_once("127.0.0.1", server.getsockname()[1])
+    thread.join(5)
+    server.close()
+    assert [r["sentence_type"] for r in rows_before_close] == ["AVG"]
+    assert "n=1 " in rows_before_close[0]["raw"]
+
+
 def test_averaged_rows_forward_through_real_api(engine, monkeypatch):
     monkeypatch.setattr(collector, "AVERAGE_SECONDS", 10)
     start = datetime(2026, 11, 15, 12, 0, 0, tzinfo=timezone.utc)
@@ -221,3 +275,17 @@ def test_tcp_eof_is_a_disconnect(monkeypatch):
     with pytest.raises(ConnectionError, match="closed"):
         collector._collect_tcp_once("127.0.0.1", port)
     server.close()
+
+
+def test_window_closes_while_source_is_down(engine, monkeypatch):
+    """Source vanishes mid-window: the retry loop must still store it."""
+    monkeypatch.setattr(collector, "AVERAGE_SECONDS", 60)
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(seconds=now.timestamp() % 60) - timedelta(seconds=60)
+    for line in (
+        nmea_gen.sentences(0).decode().splitlines()
+    ):  # a fix in the previous minute
+        collector.process_nmea_line(line, now=window_start + timedelta(seconds=5))
+    run_loop(monkeypatch, [ConnectionRefusedError("refused")])
+    (row,) = stored(engine)
+    assert row["raw"].startswith("AVG 60s n=1 ")

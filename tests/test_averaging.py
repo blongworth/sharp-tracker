@@ -22,6 +22,11 @@ def fix(lat=41.5, lon=-70.6, sog=None, cog=None, **extra):
     }
 
 
+def at(seconds: float) -> float:
+    """Epoch seconds, `seconds` after T0."""
+    return (T0 + timedelta(seconds=seconds)).timestamp()
+
+
 def run(av: Averager, samples) -> list[dict]:
     """samples: (seconds after T0, fix). Returns every completed window."""
     out = []
@@ -111,6 +116,30 @@ def test_altitude_quality_satellites():
 def test_gap_skips_empty_windows():
     out = run(Averager(60), [(5, fix()), (200, fix()), (260, fix())])
     assert [o["fix_time"][11:19] for o in out] == ["12:00:30", "12:03:30"]
+
+
+def test_close_due_emits_partial_window_on_time():
+    av = Averager(60)
+    run(
+        av, [(s, fix(lat=41.0 + s / 1e4)) for s in range(10, 20)]
+    )  # GPS quiet after 12:00:19
+    assert av.close_due(at(59.9)) is None  # window 12:00 not over yet
+    out = av.close_due(at(60))
+    assert out["fix_time"] == "2026-11-15T12:00:30+00:00"
+    assert "n=10" in out["raw"]
+    assert av.close_due(at(500)) is None  # nothing open: no empty windows
+
+
+def test_add_after_close_due_starts_fresh_window():
+    av = Averager(60)
+    run(av, [(5, fix())])
+    av.close_due(at(61))
+    out = run(av, [(62, fix(lat=42.0)), (121, fix())])
+    assert (
+        len(out) == 1
+        and "n=1 " in out[0]["raw"]
+        and out[0]["latitude"] == pytest.approx(42.0)
+    )
 
 
 def test_invalid_window():
