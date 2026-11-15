@@ -6,7 +6,7 @@ import pytest
 import requests
 from fastapi.testclient import TestClient
 
-from sharp_tracker import api, collector
+from sharp_tracker import collector, live
 from sharp_tracker.db import get_forward_cursor, latest_positions, unsent_positions
 
 T0 = datetime(2026, 11, 15, 12, 35, 19, tzinfo=timezone.utc)
@@ -107,7 +107,7 @@ def test_forward_against_real_ingest_api(engine, monkeypatch):
     collector's database, so this checks acceptance, not a second copy."""
     monkeypatch.setenv("TRACKER_INGEST_TOKEN", "secret")
     log_fixes(3)
-    with TestClient(api.app) as client:
+    with TestClient(live.app) as client:
         assert collector._forward_once(client, "http://testserver") == 3
     assert get_forward_cursor() == 3
     assert unsent_positions(get_forward_cursor()) == []

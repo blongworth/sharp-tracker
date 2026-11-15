@@ -1,17 +1,25 @@
-"""Live map dashboard: a single MapLibre page fed by SSE, no full-page refreshes.
+"""SHARP Tracker web app: live MapLibre map fed by SSE, plus position ingest.
 
 Serves:
-  GET /               -> static MapLibre page
-  GET /track          -> Server-Sent Events stream of the latest position
-  GET /api/positions  -> initial position window for the track line
+  GET  /                -> static MapLibre page
+  GET  /track           -> Server-Sent Events stream of the latest position
+  GET  /api/positions   -> initial position window for the track line
+  GET  /api/waypoints   -> current NES-LTER stations
+  GET  /health          -> health check (from api.router)
+  POST /positions/batch -> token-gated ingest (from api.router)
+
+With COLLECT=1 (`sharp-tracker --collect`) it also runs the NMEA collector in
+a background thread, so one process reads, logs, forwards, and serves the map.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -25,7 +33,10 @@ from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from .api import router as ingest_router
 from .db import fetch_positions_df, get_engine, latest_positions
+
+LOG = logging.getLogger(__name__)
 
 LIVE_DIR = Path(__file__).parent / "static"
 LIVE_REFRESH_SECONDS = float(os.getenv("LIVE_REFRESH_SECONDS", "10"))
@@ -36,10 +47,18 @@ WAYPOINTS_URL = "https://nes-lter-api.whoi.edu/api/stations/file.csv"
 async def lifespan(_: FastAPI):
     # Fail loudly at startup if DB config is wrong.
     get_engine()
+    if os.getenv("COLLECT", "").lower() in ("1", "true", "yes"):
+        # Imported lazily: a server-only deployment never needs the collector.
+        from .collector import collect_forever
+
+        LOG.info("COLLECT is set; starting NMEA collector thread")
+        # Daemon thread: it blocks on socket/serial reads and simply ends with the process.
+        threading.Thread(target=collect_forever, name="collector", daemon=True).start()
     yield
 
 
-app = FastAPI(title="SHARP Tracker live map", lifespan=lifespan)
+app = FastAPI(title="SHARP Tracker", lifespan=lifespan)
+app.include_router(ingest_router)
 
 
 def _compact_position(row: dict) -> dict:
@@ -157,16 +176,3 @@ def positions(
         )
     return records
 
-
-def main() -> None:
-    import uvicorn
-
-    uvicorn.run(
-        "sharp_tracker.live:app",
-        host=os.getenv("LIVE_HOST", "127.0.0.1"),
-        port=int(os.getenv("LIVE_PORT", "8090")),
-    )
-
-
-if __name__ == "__main__":
-    main()

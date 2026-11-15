@@ -20,7 +20,6 @@ dependencies = [
 [project.scripts]
 sharp-tracker = "sharp_tracker.run:main"
 sharp-tracker-collector = "sharp_tracker.collector:main"
-sharp-tracker-live = "sharp_tracker.live:main"
 
 [build-system]
 requires = ["hatchling"]
