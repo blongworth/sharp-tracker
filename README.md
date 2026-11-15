@@ -49,6 +49,10 @@ default 10s), `GET /api/positions?window_hours=6` (initial track window),
 `GET /api/waypoints`, `GET /health`, and `POST /positions/batch` (ingest,
 gated by `TRACKER_INGEST_TOKEN` when set).
 
+`/health` always answers 200 while the app is up and reports the newest fix's
+`last_fix_received_at` and `last_fix_age_seconds`, so an uptime monitor can
+alert when data stops arriving.
+
 The map shows an Esri Ocean bathymetric basemap, seamarks, a 1-degree graticule, the ship track, the vessel position updated over SSE, and current NES-LTER waypoints with a line to the nearest one.
 
 ## Test the whole system locally

@@ -49,7 +49,7 @@
   <div class="metric">Pos <span id="pos" style="font-size:11px">&mdash;</span></div>
   <div class="metric">SOG <span id="sog">&mdash;</span></div>
   <div class="metric">COG <span id="cog">&mdash;</span></div>
-  <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span></div>
+  <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span> <span id="fix-age" class="dim"></span></div>
   <div class="dim" id="last-updated"></div>
   <div class="dim" id="wp-hover" style="min-height:14px"></div>
 </div>
@@ -264,6 +264,39 @@ function currentHeading(p) {
   return null;
 }
 
+// Freshness: the SSE stream re-sends the latest stored fix every few seconds,
+// so a live connection alone doesn't mean data is arriving. Go red when the
+// newest fix is older than STALE_AFTER_S (collector, GPS, or link down).
+const STALE_AFTER_S = 120;
+let lastFixMs = null;
+let sseState = "connecting";  // connecting | open | error
+
+function ago(s) {
+  if (s < 90) return Math.round(s) + " s ago";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return (s / 3600).toFixed(1) + " h ago";
+  return Math.round(s / 86400) + " d ago";
+}
+
+function updateFreshness() {
+  const dot = document.getElementById("dot");
+  const status = document.getElementById("status");
+  const age = lastFixMs === null ? null : Math.max(0, (Date.now() - lastFixMs) / 1000);
+  document.getElementById("fix-age").textContent = age === null ? "" : "(" + ago(age) + ")";
+  if (sseState === "connecting") {
+    dot.className = ""; status.textContent = "connecting…";
+  } else if (sseState === "error") {
+    dot.className = "stale"; status.textContent = "reconnecting…";
+  } else if (age === null) {
+    dot.className = ""; status.textContent = "waiting for first fix";
+  } else if (age > STALE_AFTER_S) {
+    dot.className = "stale"; status.textContent = "no new fix for " + ago(age).replace(" ago", "");
+  } else {
+    dot.className = "live"; status.textContent = "live";
+  }
+}
+setInterval(updateFreshness, 5000);
+
 function applyPosition(p) {
   lastPos = p;
   document.getElementById("pos").textContent = fmt(p.lat, "°, ", 4) + fmt(p.lon, "°", 4);
@@ -272,6 +305,8 @@ function applyPosition(p) {
   if (p.t) {
     const d = new Date(p.t);
     document.getElementById("fix").textContent = d.toISOString().slice(5, 19) + " UTC";
+    lastFixMs = d.getTime();
+    updateFreshness();
   }
   document.getElementById("last-updated").textContent = "updated " + new Date().toLocaleTimeString();
 
@@ -316,9 +351,6 @@ function applyLayerVisibility() {
 }
 
 map.on("load", async () => {
-  const dot = document.getElementById("dot");
-  const status = document.getElementById("status");
-
   try {
     const wps = await (await fetch("/api/waypoints")).json();
     if (Array.isArray(wps)) {
@@ -357,12 +389,12 @@ map.on("load", async () => {
   applyLayerVisibility();
 
   const es = new EventSource("/track");
-  es.onopen = () => { dot.className = "live"; status.textContent = "live"; };
-  es.onerror = () => { dot.className = "stale"; status.textContent = "reconnecting\u2026"; };
+  es.onopen = () => { sseState = "open"; updateFreshness(); };
+  es.onerror = () => { sseState = "error"; updateFreshness(); };
   es.onmessage = (e) => {
-    dot.className = "live";
-    status.textContent = "live";
+    sseState = "open";
     try { applyPosition(JSON.parse(e.data)); } catch (err) { console.warn("bad message", err); }
+    updateFreshness();
   };
 });
 

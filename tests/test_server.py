@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,7 +31,93 @@ def client(engine, monkeypatch):
 
 def test_web_app_serves_map_and_health(client):
     assert client.get("/").status_code == 200
-    assert client.get("/health").json()["status"] == "ok"
+    health = client.get("/health").json()
+    assert health["status"] == "ok"
+    assert health["last_fix_received_at"] is None
+    assert health["last_fix_age_seconds"] is None
+
+
+def test_health_reports_last_fix(client):
+    client.post("/positions/batch", json={"positions": [FIX]})
+    health = client.get("/health").json()
+    assert health["last_fix_received_at"] == "2026-11-15T12:35:19+00:00"
+    assert health["last_fix_age_seconds"] >= 0
+
+
+def test_api_positions_window_and_format(client):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent = {
+        **FIX,
+        "received_at": (now - timedelta(minutes=10)).isoformat(),
+        "fix_time": None,
+        "raw": "$recent",
+    }
+    old = {
+        **FIX,
+        "received_at": (now - timedelta(hours=3)).isoformat(),
+        "fix_time": None,
+        "raw": "$old",
+    }
+    client.post("/positions/batch", json={"positions": [old, recent]})
+
+    assert client.get("/api/positions?window_hours=1").json() == [
+        {
+            "t": recent["received_at"],
+            "lat": 41.526,
+            "lon": -70.673,
+            "sog": None,
+            "cog": None,
+        }
+    ]
+    assert len(client.get("/api/positions?window_hours=6").json()) == 2
+
+
+def test_waypoints_empty_when_remote_unreachable(client, monkeypatch):
+    import requests
+
+    def boom(*args, **kwargs):
+        raise requests.ConnectionError("offline")
+
+    live.load_waypoints.cache_clear()
+    monkeypatch.setattr(live.requests, "get", boom)
+    assert client.get("/api/waypoints").json() == []
+    live.load_waypoints.cache_clear()
+
+
+def test_waypoints_parsed_from_csv(client, monkeypatch):
+    csv_text = (
+        "stationfullname,station,startDate,endDate,decimalLatitude,decimalLongitude,depth_m\n"
+        "LTER2,L2,2018-01-01,current,41.03,-70.88,40.0\n"
+        "LTER1,L1,2018-01-01,current,41.1967,-70.8833,NaN\n"
+        "LTER1,L1old,2010-01-01,2017-12-31,41.0,-70.0,10\n"
+        "LTER9,L9,2018-01-01,current,NaN,-70.0,10\n"
+    )
+
+    class Resp:
+        text = csv_text
+
+        def raise_for_status(self):
+            pass
+
+    live.load_waypoints.cache_clear()
+    monkeypatch.setattr(live.requests, "get", lambda *a, **k: Resp())
+    assert client.get("/api/waypoints").json() == [
+        {
+            "station": "L1",
+            "name": "LTER1",
+            "lat": 41.1967,
+            "lon": -70.8833,
+            "depth_m": None,
+        },
+        {
+            "station": "L2",
+            "name": "LTER2",
+            "lat": 41.03,
+            "lon": -70.88,
+            "depth_m": 40.0,
+        },
+    ]
+    live.load_waypoints.cache_clear()
 
 
 def test_batch_ingest_on_web_app(client):
@@ -99,4 +186,3 @@ def test_no_collector_without_collect(engine, monkeypatch):
     monkeypatch.delenv("COLLECT", raising=False)
     with TestClient(live.app):
         assert not started.wait(0.2)
-

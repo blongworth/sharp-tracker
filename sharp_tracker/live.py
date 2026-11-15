@@ -15,6 +15,7 @@ a background thread, so one process reads, logs, forwards, and serves the map.
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import logging
 import math
@@ -27,14 +28,13 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, AsyncIterator
 
-import pandas as pd
 import requests
 from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router as ingest_router
-from .db import fetch_positions_df, get_engine, latest_positions
+from .db import get_engine, latest_positions, track_positions
 
 LOG = logging.getLogger(__name__)
 
@@ -102,15 +102,36 @@ async def _position_stream() -> AsyncIterator[str]:
         await asyncio.sleep(LIVE_REFRESH_SECONDS)
 
 
+def _float_or_none(value: str | None) -> float | None:
+    """CSV cell to float; empty and "NaN" cells become None."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(number) else number
+
+
 @lru_cache(maxsize=1)
-def load_waypoints() -> pd.DataFrame:
+def load_waypoints() -> list[dict[str, Any]]:
     """Current NES-LTER station positions, cached for the process lifetime."""
     response = requests.get(WAYPOINTS_URL, timeout=15)
     response.raise_for_status()
-    wp = pd.read_csv(StringIO(response.text))
-    wp = wp[wp["endDate"].astype(str).str.lower().eq("current")].copy()
-    wp = wp.dropna(subset=["decimalLatitude", "decimalLongitude"])
-    return wp.sort_values(["stationfullname", "station"])
+    stations = []
+    for row in csv.DictReader(StringIO(response.text)):
+        lat = _float_or_none(row.get("decimalLatitude"))
+        lon = _float_or_none(row.get("decimalLongitude"))
+        if str(row.get("endDate")).lower() != "current" or lat is None or lon is None:
+            continue
+        stations.append(
+            {
+                "station": row["station"],
+                "name": row["stationfullname"],
+                "lat": lat,
+                "lon": lon,
+                "depth_m": _float_or_none(row.get("depth_m")),
+            }
+        )
+    return sorted(stations, key=lambda w: (w["name"], w["station"]))
 
 
 @app.get("/")
@@ -125,19 +146,9 @@ app.mount("/vendor", StaticFiles(directory=LIVE_DIR / "vendor"), name="vendor")
 def waypoints() -> list[dict[str, Any]]:
     """Current NES-LTER stations; [] when the remote API is unreachable."""
     try:
-        wp = load_waypoints()
+        return load_waypoints()
     except Exception:
         return []
-    return [
-        {
-            "station": r.station,
-            "name": r.stationfullname,
-            "lat": float(r.decimalLatitude),
-            "lon": float(r.decimalLongitude),
-            "depth_m": None if pd.isna(r.depth_m) else float(r.depth_m),
-        }
-        for r in wp.itertuples(index=False)
-    ]
 
 
 @app.get("/track")
@@ -154,25 +165,6 @@ def positions(
     window_hours: float = Query(6.0, ge=0.01, le=720.0),
     max_points: int = Query(1000, ge=10, le=10000),
 ) -> list[dict]:
-    """Positions within the last `window_hours`, decimated to at most `max_points`."""
+    """Positions within the last `window_hours`, thinned to at most `max_points`."""
     since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-    df = fetch_positions_df(since=since)
-    df["display_time"] = df["fix_time"].fillna(df["received_at"])
-    df = df.dropna(subset=["display_time", "latitude", "longitude"])
-    if len(df) > max_points:
-        step = len(df) // max_points
-        df = df.iloc[::step]
-
-    records = []
-    for row in df.itertuples(index=False):
-        records.append(
-            {
-                "t": row.display_time.isoformat(),
-                "lat": float(row.latitude),
-                "lon": float(row.longitude),
-                "sog": None if pd.isna(row.speed_knots) else float(row.speed_knots),
-                "cog": None if pd.isna(row.course_deg) else float(row.course_deg),
-            }
-        )
-    return records
-
+    return [_compact_position(row) for row in track_positions(since=since, max_points=max_points)]

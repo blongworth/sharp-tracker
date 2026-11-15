@@ -8,12 +8,13 @@ subscriber) can reuse it without going through HTTP.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from .db import db_label, insert_positions
+from .db import db_label, insert_positions, latest_position
 
 
 class PositionIn(BaseModel):
@@ -59,8 +60,21 @@ router = APIRouter()
 
 
 @router.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "database": db_label()}
+def health() -> dict[str, Any]:
+    """Liveness plus the newest fix, so monitors can alert when data stops.
+
+    Always 200 while the app and DB are up: a ship out of contact must not make
+    the platform restart the server.
+    """
+    latest = latest_position()
+    last_fix_at = latest["received_at"] if latest else None
+    age = (datetime.now(timezone.utc) - last_fix_at).total_seconds() if last_fix_at else None
+    return {
+        "status": "ok",
+        "database": db_label(),
+        "last_fix_received_at": last_fix_at.isoformat() if last_fix_at else None,
+        "last_fix_age_seconds": round(age, 1) if age is not None else None,
+    }
 
 
 @router.post("/positions/batch", status_code=status.HTTP_201_CREATED)

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select
 
 from sharp_tracker import db
 from sharp_tracker.db import (
-    fetch_positions_df,
     get_forward_cursor,
     insert_positions,
     latest_position,
     latest_positions,
     mark_forwarded,
+    track_positions,
     unsent_positions,
 )
 
@@ -81,12 +81,46 @@ def test_latest_positions_newest_first_utc_and_display_time(engine):
     assert rows[0]["display_time"].isoformat().endswith("+00:00")
 
 
-def test_fetch_positions_df_is_utc(engine):
+def many(n: int) -> list[dict]:
+    """n fixes one second apart."""
+    base = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+    return [
+        {
+            "received_at": (base + timedelta(seconds=i)).isoformat(),
+            "latitude": 41.0 + i / 10000,
+            "longitude": -70.6,
+            "raw": f"$X{i}",
+        }
+        for i in range(n)
+    ]
 
-    insert_positions([fix(1), fix(2, fix_time=False)])
-    df = fetch_positions_df()
-    assert str(df["received_at"].dt.tz) == "UTC"
-    assert str(df["fix_time"].dt.tz) == "UTC"
+
+def test_track_positions_unthinned_when_small(engine):
+    insert_positions(many(10))
+    rows = track_positions(max_points=10)
+    assert [r["raw"] for r in rows] == [f"$X{i}" for i in range(10)]
+    assert all(r["display_time"].tzinfo is not None for r in rows)
+
+
+@pytest.mark.parametrize(
+    "n, max_points", [(11, 10), (1000, 10), (1001, 100), (2500, 1000), (57, 13)]
+)
+def test_track_positions_thinned_keeps_bounds(engine, n, max_points):
+    insert_positions(many(n))
+    rows = track_positions(max_points=max_points)
+    assert len(rows) <= max_points
+    assert len(rows) >= max_points // 2  # thinned, not gutted
+    assert rows[0]["raw"] == "$X0"  # oldest kept
+    assert rows[-1]["raw"] == f"$X{n - 1}"  # newest kept: track ends at the ship
+    times = [r["received_at"] for r in rows]
+    assert times == sorted(times)
+
+
+def test_track_positions_since(engine):
+    insert_positions(many(10))
+    rows = track_positions(since="2026-11-15T12:00:07+00:00")
+    assert [r["raw"] for r in rows] == ["$X7", "$X8", "$X9"]
+    assert track_positions(since="2027-01-01T00:00:00+00:00") == []
 
 
 def test_forward_cursor_round_trip(engine):

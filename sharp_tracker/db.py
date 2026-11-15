@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import (
     Column,
@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     event,
+    func,
     select,
     text,
 )
@@ -146,18 +147,44 @@ def insert_positions(rows: list[dict[str, Any]], engine: Engine | None = None) -
         conn.execute(_insert(engine, positions).on_conflict_do_nothing(), payload)
 
 
-def fetch_positions_df(
-    engine: Engine | None = None,
+def track_positions(
     since: datetime | str | None = None,
-) -> pd.DataFrame:
-    """Fetch positions, optionally limited to `since` (by received_at)."""
+    max_points: int = 1000,
+    engine: Engine | None = None,
+) -> list[dict]:
+    """Positions with received_at >= since, oldest first, thinned to <= max_points.
+
+    Thinning happens in SQL (every Nth row), so a long window never loads into
+    memory. The newest row is always kept so the track ends at the ship. Each
+    dict has `display_time` like latest_positions().
+    """
     engine = engine or get_engine()
-    stmt = select(positions).order_by(positions.c.received_at, positions.c.id)
+    window = select(positions)
     if since is not None:
-        stmt = stmt.where(positions.c.received_at >= _parse_dt(since))
+        window = window.where(positions.c.received_at >= _parse_dt(since))
+    window = window.subquery()
+
     with engine.connect() as conn:
-        utc = {"utc": True}
-        return pd.read_sql(stmt, conn, parse_dates={"received_at": utc, "fix_time": utc})
+        total = conn.execute(select(func.count()).select_from(window)).scalar_one()
+        if total == 0:
+            return []
+        # Every step-th row plus the newest: at most max_points rows.
+        step = 1 if total <= max_points else math.ceil(total / (max_points - 1))
+        rn = func.row_number().over(order_by=(window.c.received_at, window.c.id)).label("rn")
+        numbered = select(window, rn).subquery()
+        stmt = (
+            select(*[numbered.c[c.name] for c in positions.columns])
+            .where(((numbered.c.rn - 1) % step == 0) | (numbered.c.rn == total))
+            .order_by(numbered.c.rn)
+        )
+        rows = conn.execute(stmt).mappings().all()
+
+    result = []
+    for row in rows:
+        data = _row_dict(row)
+        data["display_time"] = data["fix_time"] or data["received_at"]
+        result.append(data)
+    return result
 
 
 def latest_positions(n: int = 1, engine: Engine | None = None) -> list[dict]:
@@ -243,9 +270,7 @@ def _parse_dt(value: Any) -> datetime | None:
     """
     if value in (None, ""):
         return None
-    if isinstance(value, pd.Timestamp):
-        value = value.to_pydatetime()
-    elif isinstance(value, str):
+    if isinstance(value, str):
         value = datetime.fromisoformat(value.replace("Z", "+00:00"))
     elif not isinstance(value, datetime):
         raise TypeError(f"Unsupported datetime value: {value!r}")
