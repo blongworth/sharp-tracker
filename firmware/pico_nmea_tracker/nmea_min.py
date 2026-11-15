@@ -30,7 +30,12 @@ def parse_line(line):
         if sentence_type == "GGA":
             return None, _parse_gga(fields, talker, raw)
         if sentence_type == "RMC":
-            return None, _parse_rmc(fields, talker, raw)
+            # RMC speed/course also feed navigation, like nmea.py, so they
+            # carry forward onto later GGA fixes.
+            speed = _float_or_none(fields[7]) if len(fields) > 7 else None
+            course = _float_or_none(fields[8]) if len(fields) > 8 else None
+            nav = {"speed_knots": speed, "course_deg": course} if speed is not None or course is not None else None
+            return nav, _parse_rmc(fields, talker, raw)
     except (IndexError, ValueError):
         return None, None
     return None, None
@@ -89,6 +94,8 @@ def _parse_gga(f, talker, raw):
     lon = _to_decimal(f[4], f[5])
     if lat is None or lon is None or (lat == 0 and lon == 0):
         return None
+    if _int_or_none(f[6]) == 0:
+        return None  # quality 0 = no fix
     return {
         "fix_time": None,
         "talker": talker,
@@ -130,6 +137,8 @@ def _parse_rmc(f, talker, raw):
 def _parse_vtg(f):
     # $--VTG,track,T,magtrack,M,speedKnots,N,speedKmh,K,mode
     course = _float_or_none(f[1]) if len(f) > 1 else None
+    if course is None and len(f) > 3:
+        course = _float_or_none(f[3])  # magnetic track fallback, as in nmea.py
     speed = _float_or_none(f[5]) if len(f) > 5 else None
     if course is None and speed is None:
         return None
