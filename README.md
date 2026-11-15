@@ -182,6 +182,9 @@ Most NMEA GPS/AIS talkers are 4800 baud (some AIS units use 38400) and idle high
 which is compatible with the Pico's 3.3V UART input — if your source outputs RS-232
 levels instead of TTL, add a level shifter between them.
 
+For a field build (3D-printed enclosure, USB wall power, opto-isolated DB9 GPS input),
+see [`hardware/pico_enclosure/`](hardware/pico_enclosure/README.md).
+
 ### Install
 
 1. Flash the latest [CircuitPython UF2 for Raspberry Pi Pico W](https://circuitpython.org/board/raspberry_pi_pico_w/)
