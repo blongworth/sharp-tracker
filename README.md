@@ -126,6 +126,58 @@ python -m sharp_tracker.collector
 
 Set the same `TRACKER_INGEST_TOKEN` on the Railway ingest API service.
 
+## Pico W firmware (CircuitPython NMEA bridge)
+
+`firmware/pico_nmea_tracker/` is an alternative to running the Python collector on a
+shipboard laptop/Raspberry Pi: a Raspberry Pi **Pico W** (or Pico 2 W — WiFi is
+required) wired directly to the NMEA source reads sentences over UART and posts
+parsed positions straight to the ingest API, same as `sharp_tracker.collector` does.
+It does not talk to Postgres directly — like the desktop collector, it authenticates
+to the ingest API with `TRACKER_INGEST_TOKEN` and lets that service own the database
+connection, so no DB credentials ever live on the field device.
+
+### Hardware
+
+Wire the NMEA talker's TX output to the Pico's UART0 RX pin, and tie grounds together:
+
+| NMEA source | Pico W |
+| --- | --- |
+| TX (NMEA out) | GP1 (UART0 RX) |
+| GND | GND |
+
+Most NMEA GPS/AIS talkers are 4800 baud (some AIS units use 38400) and idle high,
+which is compatible with the Pico's 3.3V UART input — if your source outputs RS-232
+levels instead of TTL, add a level shifter between them.
+
+### Install
+
+1. Flash the latest [CircuitPython UF2 for Raspberry Pi Pico W](https://circuitpython.org/board/raspberry_pi_pico_w/)
+   by holding BOOTSEL while plugging in the Pico, then dragging the UF2 onto the
+   `RPI-RP2` drive that appears. It reboots as a `CIRCUITPY` USB drive.
+2. From the [Adafruit CircuitPython Bundle](https://circuitpython.org/libraries)
+   matching your CircuitPython version, copy these into `CIRCUITPY/lib/`:
+   - `adafruit_requests.mpy`
+   - `adafruit_connection_manager.mpy`
+   - `adafruit_ntp.mpy`
+3. Copy `firmware/pico_nmea_tracker/code.py` and `firmware/pico_nmea_tracker/nmea_min.py`
+   to the root of `CIRCUITPY`.
+4. Copy `firmware/pico_nmea_tracker/settings.toml.example` to `CIRCUITPY/settings.toml`
+   and fill in your WiFi credentials, `TRACKER_API_URL`, and `TRACKER_INGEST_TOKEN`
+   (the same ingest URL/token used by the desktop collector above). `settings.toml`
+   is gitignored — never commit your filled-in copy.
+
+### Use
+
+The Pico runs `code.py` automatically on boot and whenever `CIRCUITPY` is
+reconnected. Open a serial console (e.g. `screen /dev/tty.usbmodemXXXX 115200`,
+or the Mu editor's serial pane) to watch it connect to WiFi, sync its clock over
+NTP, and log each parsed fix as it batches and POSTs positions to
+`/positions/batch`. If the ingest API is unreachable, positions queue in RAM (up
+to `MAX_BUFFER`, oldest dropped first) and resume sending once connectivity
+returns; any other unhandled error restarts the whole bridge after 5 seconds
+rather than requiring a manual reset. Tune `BATCH_SIZE`/`FLUSH_SECONDS` in
+`settings.toml` to trade off POST frequency against position latency.
+
 ## Database configuration
 
 Local default is SQLite:

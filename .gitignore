@@ -14,3 +14,4 @@ data/
 *.sqlite3
 .env
 logs/
+firmware/pico_nmea_tracker/settings.toml

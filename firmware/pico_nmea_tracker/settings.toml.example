@@ -1,0 +1,22 @@
+# Copy to settings.toml on the CIRCUITPY drive and fill in real values.
+# CircuitPython reads this file into os.getenv() at boot; it is not committed
+# to git (see repo .gitignore).
+
+CIRCUITPY_WIFI_SSID = "ship-wifi"
+CIRCUITPY_WIFI_PASSWORD = "change-me"
+
+# Same ingest API the desktop collector posts to (sharp_tracker.api).
+TRACKER_API_URL = "https://your-ingest-service.up.railway.app"
+TRACKER_INGEST_TOKEN = "change-me"
+
+# NMEA source wired to UART0 (GP0/GP1). 4800 is the common NMEA default;
+# some AIS/GPS units use 38400.
+NMEA_SERIAL_BAUD = "4800"
+
+# Batching: flush whichever comes first.
+BATCH_SIZE = "20"
+FLUSH_SECONDS = "5"
+
+# Cap on buffered positions kept in RAM while the ingest API is unreachable;
+# oldest positions are dropped once this is exceeded.
+MAX_BUFFER = "500"
