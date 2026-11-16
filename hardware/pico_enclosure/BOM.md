@@ -11,15 +11,19 @@ Use stainless (A2/A4) screws on a ship.
 
 | Ref | Qty | Part | Spec / notes | ~USD |
 | --- | --- | --- | --- | --- |
-| — | 1 | Raspberry Pi Pico W (or Pico 2 W) | WiFi required. Buy without pin headers, or set `pico_standoff_h = 11` in `enclosure.scad` | 7 |
+| — | 1 | Raspberry Pi Pico WH (or Pico 2 WH) | WiFi required. The "H" version has male headers pre-soldered; otherwise buy a Pico W plus 2 × 1×20 male 2.54 mm headers | 7 |
+| — | 2 | 1×20 round-pin (machined) female socket strip, 2.54 mm | Pico socket on the carrier; round-pin grips better under vibration than leaf-spring | 2 |
 | U1 | 1 | H11L1 optocoupler, DIP-6 | Schmitt-trigger, open-collector output (onsemi H11L1M, Everlight H11L1, Isocom H11L1) | 1 |
 | — | 1 | DIP-6 IC socket | so U1 can be swapped | 0.30 |
 | R1 | 1 | Resistor 390 Ω, ½ W | LED current limit. 270 Ω if a weak RS-422 talker gives garbled data | 0.10 |
 | R2 | 1 | Resistor 4.7 kΩ, ¼ W | output pull-up | 0.10 |
 | D1 | 1 | 1N4148 diode | reverse protection across the LED | 0.10 |
 | C1 | 1 | Capacitor 100 nF ceramic | U1 VCC decoupling | 0.10 |
-| — | 1 | Perfboard, 3 × 7 cm | holds U1 and parts; mounts on the 66 × 26 mm standoff pattern | 0.50 |
-| — | — | Hookup wire, 24–26 AWG stranded | DB9 → board → Pico, about 50 cm total | — |
+| J2 | 1 | JST-XH 2-way header, top entry (B2B-XH-A) + XHP-2 housing + 2 crimped leads | GPS pair from the DB9. Pre-crimped leads avoid needing a JST crimper | 1 |
+| — | 1 | Perfboard, 5 × 7 cm | carrier for U1, parts and the Pico socket. Set `carrier_holes` in `enclosure.scad` to its mounting holes | 0.70 |
+| — | — | Hookup wire, 24–26 AWG stranded, silicone or PTFE insulation | twisted GPS pair, DB9 → J2, about 15 cm | — |
+| — | — | Bare tinned wire or 26 AWG solid | underside links to the socket pins | — |
+| — | — | Heat-shrink, small, and a few small zip ties | DB9 solder cups; strain relief | — |
 
 ## Connectors and power
 
@@ -39,7 +43,7 @@ Use stainless (A2/A4) screws on a ship.
 | 1 | Printed box (`enclosure.scad`, `part = "box"`) | PETG or ASA (PLA softens in a hot wheelhouse). About 60–75 g | 2 |
 | 1 | Printed lid (`part = "lid"`) | About 20–30 g | 1 |
 | 4 | M3 × 12 self-tapping screws for plastic, pan head, stainless | lid, threaded straight into the printed bosses (2.6 mm pilot) | 0.50 |
-| 8 | M2 × 5 self-tapping screws | Pico (4) and perfboard (4) standoffs | 0.50 |
+| 4 | M2 × 5 self-tapping screws | carrier board standoffs | 0.25 |
 | 4 | #8 or M4 screws, stainless | mounting ears to bulkhead/bench; or use VHB tape | 0.50 |
 
 ## Ship-side cabling (depends on the GPS)
@@ -57,6 +61,7 @@ Use stainless (A2/A4) screws on a ship.
 | 1 | USB to RS-232 adapter (DB9) | drive the box from `scripts/simulate_nmea_source.py --serial` |
 | 1 | Multimeter | bench check of the input circuit (README) |
 | 1 | Soldering iron | perfboard and DB9 |
+| 1 | JST crimper (e.g. Engineer PA-09) | only if crimping your own J2 leads |
 
 ## Total
 

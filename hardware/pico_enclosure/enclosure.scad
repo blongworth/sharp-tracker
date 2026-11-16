@@ -1,7 +1,7 @@
 // SHARP Tracker: 3D-printable enclosure for the Pico W NMEA collector.
 //
-// Box + screw-down lid. The Pico W and a perfboard with the opto-isolated
-// NMEA 0183 input (see README.md) sit on standoffs. Ports:
+// Box + screw-down lid. One perfboard carrier on standoffs holds the opto-isolated
+// NMEA 0183 input (see README.md) and a socket the Pico W plugs into. Ports:
 //   front wall: DE-9 (DB9) male panel connector, GPS NMEA in (pins 2 + 5)
 //   back wall:  panel-mount USB-C -> micro-USB cable, 5 V power + data
 // The lid is held by four M3 self-tapping screws driven into the corner bosses,
@@ -12,10 +12,10 @@
 // before printing; panel-mount USB-C flanges vary between vendors.
 //
 // Render one part at a time for export: set `part` to "box" or "lid".
-// "pico" and "isolator" are reference models of the Pico W and the breadboarded
-// opto-isolated NMEA input (not for printing); "assembly" shows them in the box.
+// "pico" and "carrier" are reference models of the Pico W and the perfboard carrier
+// with the opto-isolated NMEA input (not for printing); "assembly" shows them in the box.
 
-part = "both"; // [both, box, lid, pico, isolator, assembly]
+part = "both"; // [both, box, lid, pico, carrier, assembly]
 
 /* [Box] */
 inner = [120, 62, 32];   // cavity x (front-back), y, z (floor to lid)
@@ -36,17 +36,18 @@ lid_screw_d = 3.4;       // M3 clearance
 /* [Pico W] */
 pico_size = [51, 21];
 pico_holes = [[2, 4.8], [2, 16.2], [49, 4.8], [49, 16.2]];  // datasheet: 47 x 11.4 mm
-pico_pos = [30, 5];      // USB end faces the back wall (x = 0)
-pico_standoff_h = 5;     // raise to ~11 if the Pico has pin headers soldered on
+pico_row_y = (21 - 17.78) / 2;   // pin rows are 17.78 mm (0.7") apart
+pico_headers = true;     // male pin headers on the Pico (Pico WH, or solder your own)
+header_spacer = 2.5;     // plastic spacer of the Pico's male header
+
+/* [Carrier board] */
+carrier_size = [70, 50]; // 5 x 7 cm perfboard: opto input + Pico socket
+carrier_holes = [[3, 3], [3, 47], [67, 3], [67, 47]];   // MEASURE: match your perfboard
+carrier_pos = [30, 6];   // Pico USB end faces the back wall (x = 0)
+carrier_standoff_h = 5;
 standoff_d = 5;
 standoff_hole_d = 1.8;   // M2 self-tapping
-pico_headers = false;    // show soldered pin headers (pins hang below the board)
-
-/* [Interface board] */
-iface_size = [70, 30];   // 3 x 7 cm perfboard
-iface_holes = [[2, 2], [2, 28], [68, 2], [68, 28]];
-iface_pos = [30, 29];
-iface_standoff_h = 5;
+socket_h = 8.5;          // body height of the 1 x 20 female socket strips
 
 /* [Ports] */
 port_z = 16;             // port centre height above the cavity floor
@@ -159,8 +160,7 @@ module box() {
         translate([c.x, c.y, inner.z - boss_hole_depth]) cylinder(d = boss_hole_d, h = boss_hole_depth + 1);
     }
 
-    standoffs(pico_pos, pico_holes, pico_standoff_h);
-    standoffs(iface_pos, iface_holes, iface_standoff_h);
+    standoffs(carrier_pos, carrier_holes, carrier_standoff_h);
 }
 
 // Modelled lid-on-box: plate at z 0..lid_t, lip hanging below.
@@ -210,17 +210,26 @@ module pico_w() {
         color("#ddd") translate([11.75, 15.75, 1.4]) cylinder(d = 2.2, h = 0.6);
         color("#eee") translate([4.5, 16, 0]) cube([1.6, 0.8, 0.5]);                     // LED
     }
-    if (pico_headers) for (x = pin_x, y = [1.37, pico_size.y - 1.37]) {
-        color("#222") translate([x - 1.27, y - 1.27, -2.5]) cube([2.54, 2.54, 2.5]);
-        color("gold") translate([x - 0.32, y - 0.32, -8.5]) cube([0.64, 0.64, 8.5 + t + 0.5]);
+    if (pico_headers) for (x = pin_x, y = [pico_row_y, pico_size.y - pico_row_y]) {
+        color("#222") translate([x - 1.27, y - 1.27, -header_spacer]) cube([2.54, 2.54, header_spacer]);
+        color("gold") translate([x - 0.32, y - 0.32, -header_spacer - 6]) cube([0.64, 0.64, header_spacer + 6 + t + 0.5]);
     }
 }
 
-// Breadboarded opto-isolated NMEA input on the 3 x 7 cm perfboard (README "GPS input").
-// GPS screw terminal at the front-wall end (x = iface_size.x), Pico header at x = 0.
-grid_n = [23, 9];
-grid0 = [(iface_size.x - (grid_n.x - 1) * 2.54) / 2, (iface_size.y - (grid_n.y - 1) * 2.54) / 2];
+// Perfboard carrier (README "GPS input"). 0.1" grid, hole (i, j); x runs back -> front.
+// The Pico plugs into two 1 x 20 socket strips on rows j = 9 and 16, USB end at i = 0,
+// so Pico pin 2 (GP1) is hole (1, 9), pin 3 (GND) is (2, 9), pin 36 (3V3) is (4, 16).
+// The opto input sits on rows j = 0..7: its isolated GPS side (J2, R1, D1, U1 pins 1-2)
+// on rows 0-2 at the front end, its Pico side (U1 pins 4-6, R2, C1) on rows 5-7.
+// The bare board under U1 between rows 2 and 5 is the isolation gap.
+grid_n = [24, 17];
+grid0 = [(carrier_size.x - (grid_n.x - 1) * 2.54) / 2, (carrier_size.y - (grid_n.y - 1) * 2.54) / 2];
 function g(i, j) = [grid0.x + i * 2.54, grid0.y + j * 2.54];
+
+pico_row_j = 9;
+// Pico origin on the carrier: pin 1 (pin_x[0], pico_row_y) over hole (0, pico_row_j).
+pico_on_carrier = [g(0, 0).x - 1.37, g(0, pico_row_j).y - pico_row_y,
+                   pcb_t + socket_h + header_spacer];
 
 module axial(a, b, d, len, body_col) {   // lying along x between holes a and b
     mid = (a + b) / 2;
@@ -232,7 +241,7 @@ module axial(a, b, d, len, body_col) {   // lying along x between holes a and b
     color(body_col) translate([mid.x - len / 2, mid.y, h]) rotate([0, 90, 0]) cylinder(d = d, h = len, $fn = 24);
 }
 
-module dip6(p) {   // H11L1 in a socket, pin 1 at hole p, rows 7.62 mm apart in y
+module dip6(p) {   // H11L1 in a socket, pin 1 at hole p, pins 1-3 along +x, 6-4 one row 7.62 mm up in y
     l = 2 * 2.54 + 3.8;
     translate([p.x - 1.9, p.y - 1.27, 0]) {
         color("#222") cube([l, 7.62 + 2.54, 3]);
@@ -241,53 +250,57 @@ module dip6(p) {   // H11L1 in a socket, pin 1 at hole p, rows 7.62 mm apart in 
     }
 }
 
-module header(p, n) {   // 1 x n male header running along y from hole p
-    color("#222") translate([p.x - 1.27, p.y - 1.27, 0]) cube([2.54, n * 2.54, 2.5]);
-    color("gold") for (k = [0 : n - 1]) translate([p.x - 0.32, p.y + k * 2.54 - 0.32, -3]) cube([0.64, 0.64, 11.5]);
-}
-
-module screw_terminal(c) {   // 2-way 5.08 mm terminal centred at c, wire entries facing +x
-    w = 10.2; d = 7.6; h = 10;
-    translate([c.x - d / 2, c.y - w / 2, 0]) difference() {
-        color("#2a6fb5") cube([d, w, h]);
-        for (k = [-1, 1]) {
-            translate([d / 2, w / 2 + k * 2.54, h - 2]) cylinder(d = 3.4, h = 3);
-            translate([d - 3, w / 2 + k * 2.54 - 1.6, 1.5]) cube([4, 3.2, 3.2]);
-        }
-    }
-    color("silver") for (k = [-1, 1]) translate([c.x, c.y + k * 2.54, h - 2.5]) difference() {
-        cylinder(d = 3, h = 1.5);
-        translate([-1.5, -0.3, 1]) cube([3, 0.6, 1]);
+module socket_strip(p, n) {   // 1 x n round-pin female socket running along x from hole p
+    color("#222") difference() {
+        translate([p.x - 1.27, p.y - 1.27, 0]) cube([n * 2.54, 2.54, socket_h]);
+        for (k = [0 : n - 1]) translate([p.x + k * 2.54, p.y, socket_h - 3]) cylinder(d = 1.2, h = 4, $fn = 12);
     }
 }
 
-module isolator_board() {
+module jst_xh(p, n) {   // n-way JST-XH top-entry header running along y from hole p
+    w = (n - 1) * 2.5 + 4.9; d = 5.75; h = 7;
+    translate([p.x - d / 2, p.y - 2.45, 0]) difference() {
+        color("#eee") cube([d, w, h]);
+        translate([0.8, 0.8, 1.5]) cube([d - 1.6, w - 1.6, h]);
+    }
+    color("gold") for (k = [0 : n - 1]) translate([p.x - 0.32, p.y + k * 2.5 - 0.32, -3]) cube([0.64, 0.64, 9]);
+}
+
+module carrier_board() {
     color("#c79a5b") difference() {
-        cube([iface_size.x, iface_size.y, pcb_t]);
-        for (h = iface_holes) translate([h.x, h.y, -1]) cylinder(d = 3.2, h = pcb_t + 2);
+        cube([carrier_size.x, carrier_size.y, pcb_t]);
+        for (h = carrier_holes) translate([h.x, h.y, -1]) cylinder(d = 3.2, h = pcb_t + 2);
         for (i = [0 : grid_n.x - 1], j = [0 : grid_n.y - 1])
             translate([each g(i, j), -1]) cylinder(d = 1, h = pcb_t + 2, $fn = 8);
     }
     translate([0, 0, pcb_t]) {
-        header(g(0, 3), 3);                                   // J2 to Pico: 3V3, GND, GP1
-        axial(g(3, 1), g(7, 1), 2.4, 6.3, "#d9c08c");         // R2 4.7k pull-up
-        translate([each g(4, 7), 0]) color("#d8b23a")         // C1 100 nF
+        // Pico side of the opto input
+        axial(g(5, 6), g(9, 6), 2.4, 6.3, "#d9c08c");         // R2 4.7k pull-up, U1 pin 4 to 3V3
+        translate([each g(10.5, 7), 0]) color("#d8b23a")      // C1 100 nF at U1 pin 6
             translate([-2, -1.25, 0]) cube([4, 2.5, 5]);
-        dip6(g(9, 2));                                        // U1 H11L1
-        axial(g(14, 1), g(18, 1), 1.8, 3.6, "#e07a2a");       // D1 1N4148
-        axial(g(13, 7), g(19, 7), 3.2, 9, "#7aa6c9");         // R1 390R 1/2 W
-        screw_terminal(g(21, 4));                             // J1 from DB9 pins 2 + 5
+        dip6(g(12, 2));                                       // U1 H11L1: pins 1-3 row 2, 6-4 row 5
+        // isolated GPS side
+        axial(g(16, 2), g(20, 2), 1.8, 3.6, "#e07a2a");       // D1 1N4148 across the LED
+        axial(g(13, 0), g(21, 0), 3.2, 9, "#7aa6c9");         // R1 390R 1/2 W
+        jst_xh(g(22, 1), 2);                                  // J2 GPS in from DB9 pins 2 + 5
+        // Pico socket
+        for (j = [pico_row_j, pico_row_j + 7]) socket_strip(g(0, j), 20);
     }
 }
 
 // Print the box open side up and the lid plate side down.
 if (part == "box" || part == "both") box();
 if (part == "pico") pico_w();
-if (part == "isolator") isolator_board();
+if (part == "carrier") {
+    carrier_board();
+    translate(pico_on_carrier) pico_w();
+}
 if (part == "assembly") {
     box();
-    translate([pico_pos.x, pico_pos.y, pico_standoff_h]) pico_w();
-    translate([iface_pos.x, iface_pos.y, iface_standoff_h]) isolator_board();
+    translate([carrier_pos.x, carrier_pos.y, carrier_standoff_h]) {
+        carrier_board();
+        translate(pico_on_carrier) pico_w();
+    }
     color("white", 0.25) translate([0, 0, inner.z]) lid();
 }
 if (part == "lid" || part == "both")

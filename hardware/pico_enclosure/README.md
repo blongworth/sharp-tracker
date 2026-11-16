@@ -18,12 +18,15 @@ The box is splash-resistant at most. It has no gasket, so mount it somewhere dry
 ## Files
 
 `enclosure.scad` is a parametric OpenSCAD model. Set `part` to `"box"` or `"lid"`
-and export each one to STL. `"pico"` and `"isolator"` render reference models of
-the Pico W and the perfboard NMEA input (U1, R1, R2, D1, C1, the GPS screw terminal
-and the Pico header). They are not for printing. `"assembly"` shows both boards on
-their standoffs inside the box with a see-through lid, for checking fit and
-headroom. Set `pico_headers = true` to show soldered pin headers. Customizer groups:
-`[Box]`, `[Lid]`, `[Pico W]`, `[Interface board]`, `[Ports]`, `[Mounting ears]`.
+and export each one to STL. `"pico"` renders a reference model of the Pico W, and
+`"carrier"` renders the perfboard carrier (U1, R1, R2, D1, C1, the J2 GPS connector
+and the Pico socket) with the Pico plugged in. Neither is for printing. `"assembly"`
+shows the carrier on its standoffs inside the box with a see-through lid, for
+checking fit and headroom. Customizer groups: `[Box]`, `[Lid]`, `[Pico W]`,
+`[Carrier board]`, `[Ports]`, `[Mounting ears]`.
+
+**Measure your perfboard's mounting holes** and set `carrier_holes` to match before
+printing. 5 × 7 cm boards differ between vendors.
 
 **Measure your panel connectors before you print.** USB-C panel-mount flanges
 differ between vendors (`usb_screw_dx`, `usb_cut`). For a round threaded
@@ -55,7 +58,7 @@ The same circuit accepts RS-422 (standard marine NMEA) and RS-232.
 
 Bare NMEA wires go into a DB9 screw-terminal adapter.
 
-**Parts** (on the 3 × 7 cm perfboard):
+**Parts** (on the carrier board, below):
 
 | Ref | Part | Job |
 | --- | --- | --- |
@@ -69,8 +72,8 @@ Bare NMEA wires go into a DB9 screw-terminal adapter.
 
 | From | To |
 | --- | --- |
-| DB9 pin 2 | R1 → H11L1 pin 1 (LED anode) and D1 cathode |
-| DB9 pin 5 | H11L1 pin 2 (LED cathode) and D1 anode |
+| DB9 pin 2 (via J2) | R1 → H11L1 pin 1 (LED anode) and D1 cathode |
+| DB9 pin 5 (via J2) | H11L1 pin 2 (LED cathode) and D1 anode |
 | H11L1 pin 6 (VCC) | Pico 3V3(OUT), physical pin 36; C1 to Pico GND |
 | H11L1 pin 4 (Vo) | Pico GP1 (UART0 RX), physical pin 2; R2 to 3V3 |
 | H11L1 pin 5 (GND) | Pico GND, physical pin 3 |
@@ -94,16 +97,64 @@ which would light the LED and invert the data. Wire a TTL source directly to GP1
 instead (main README). The RS-422 minimum swing of ±2 V is close to the H11L1's
 1.6 mA turn-on current. If a weak talker gives garbled sentences, drop R1 to 270 Ω.
 
+## Carrier board and internal connections
+
+One 5 × 7 cm perfboard carries both the opto input and the Pico. The Pico plugs
+into two 1 × 20 round-pin socket strips, so it comes out without a soldering iron
+and a Pico 2 W drops into the same socket. Its outputs reach the Pico through
+wire links on the underside of the perfboard to the socket pins, so no wires go to
+the Pico itself.
+
+The box has two internal cables:
+
+| Cable | Board end | Far end |
+| --- | --- | --- |
+| GPS pair (DB9 pins 2 + 5), twisted | **J2**, a 2-way JST-XH (B2B-XH-A) | **Soldered** into the DB9 solder cups, with heat-shrink over each cup |
+| USB power/data | Micro-USB plug into the Pico | Panel-mount USB-C (screwed to the back wall) |
+
+**Layout** (holes counted on the 0.1" grid from the back-left corner, matching
+`enclosure.scad`):
+
+- Pico socket strips on rows 9 and 16, with the Pico's USB end toward the back wall.
+  Pico pin 2 (GP1) is the second hole of row 9, pin 3 (GND) the third, and pin 36
+  (3V3(OUT)) the fifth hole of row 16. Run the 3V3 link between the socket rows,
+  under the Pico.
+- Opto input on rows 0–7. Its Pico side (U1 pins 4–6, R2, C1) is on rows 5–7,
+  next to the socket. Its isolated GPS side (J2, R1, D1, U1 pins 1–2) is on rows 0–2
+  at the front end, toward the DB9.
+- **Isolation gap:** keep rows 3–4 under U1 bare, and route nothing from the GPS
+  side across it. On stripboard, cut every strip under U1.
+
+**Solder joints:**
+
+- Solder all 40 socket pins, or at least pins 2, 3, 36 and two at each end of
+  each strip for strength. Fit the Pico into the strips while soldering them, so
+  they end up straight and the right distance apart.
+- Use bare tinned wire or 26 AWG links on the underside for short runs. Use
+  insulated wire wherever a link crosses another one.
+- At the DB9, tin both the cup and the wire before joining them. Silicone- or
+  PTFE-insulated wire won't shrink back from the heat.
+- Wire colours: red for 3V3, black for GND, yellow for GP1, and white/blue for the
+  isolated A/B pair, so the isolated side can't be mistaken for Pico ground.
+- Strain relief: tie the GPS pair to the carrier near J2 with a small zip tie
+  through two spare holes.
+- Vibration: the socket grips the Pico firmly, but on a strongly vibrating mount
+  (near engines) also put a zip tie over the Pico, or a dab of neutral-cure RTV at
+  one corner. Avoid hot glue, which softens in a hot wheelhouse. Do the same for
+  the micro-USB plug, which is friction-fit.
+- Optional: acrylic conformal coating on the solder side. Keep it out of the sockets
+  and connectors.
+
 ## Assembly
 
 1. Pre-tap the four corner bosses by driving an M3 screw in and back out once.
    When refitting the lid later, turn each screw backwards until it clicks into the
    existing thread before tightening, so it doesn't cut a new one. Don't overtighten.
 2. Mount the DB9 (front) and USB-C panel connector (back).
-3. Build the interface board and screw it and the Pico onto their standoffs.
-   The Pico's USB end faces the back wall.
-4. Plug the panel cable's micro-USB end into the Pico. Wire the DB9 to the
-   interface board and the interface board to the Pico.
+3. Build the carrier board, plug in U1 and the Pico, and screw the carrier onto
+   its standoffs. The Pico's USB end faces the back wall.
+4. Plug the panel cable's micro-USB end into the Pico and the DB9's GPS pair
+   into J2.
 5. Test with the lid open: run `scripts/simulate_nmea_source.py --serial` through
    a USB-RS-232 adapter into the DB9 (README "Pico W firmware") and watch the
    serial console. Then screw the lid on.
