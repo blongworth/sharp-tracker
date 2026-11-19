@@ -46,6 +46,7 @@ class World:
         self.rmc = rmc
         self.wifi_up = True
         self.server_up = True
+        self.server_status = 201  # HTTP status the reachable server answers with
         self.ntp_up = False
         self.mem_free = 100_000
         # "fix", "no_fix" (talking, quality 0/status V), "garbled" (wrong baud), or "silent"
@@ -176,7 +177,7 @@ def install_stubs(monkeypatch, world: World):
     module("ssl", create_default_context=lambda: object())
 
     class Ntp:
-        def __init__(self, pool, tz_offset=0):
+        def __init__(self, pool, tz_offset=0, socket_timeout=10):
             if not world.ntp_up:
                 raise OSError("NTP timeout")
 
@@ -202,6 +203,8 @@ def install_stubs(monkeypatch, world: World):
             world.t += 0.5
             if not (world.wifi_up and world.server_up):
                 raise OSError("unreachable")
+            if world.server_status != 201:
+                return Response(world.server_status)
             world.posts.append(json["positions"])
             return Response(201)
 
@@ -407,3 +410,22 @@ def test_fatal_error_flickers_then_reboots(run_firmware):
         run_firmware(world, TRACKER_API_URL="")
     assert world.led[0] is True  # solid on while booting
     assert len(world.led) > 20  # flickered for the 5 s before reset
+
+
+def test_rejected_sends_report_the_http_status(run_firmware, capsys):
+    world = World(seconds=125)
+    world.server_status = 401
+    run_firmware(world, STATUS_SECONDS="60")
+    out = capsys.readouterr().out
+    assert "Send failed: HTTP 401 (check TRACKER_INGEST_TOKEN)" in out
+    last = [line for line in out.splitlines() if line.startswith("Status:")][-1]
+    assert "send=failing (HTTP 401 (check TRACKER_INGEST_TOKEN))" in last
+    assert world.posts == []
+
+
+def test_network_errors_report_the_exception(run_firmware, capsys):
+    world = World(seconds=125)
+    world.hooks[30] = lambda w: setattr(w, "server_up", False)
+    run_firmware(world, STATUS_SECONDS="60")
+    out = capsys.readouterr().out
+    assert "Send failed: OSError('unreachable')" in out

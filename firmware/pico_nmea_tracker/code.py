@@ -32,8 +32,7 @@ from averaging import Averager, epoch_from_parts
 from fixes import FixBuffer, FixFilter, ascii_text, fix_time_parts, iso_utc, weekday
 from status import LED_FLICKER, Health, led_on
 
-UART_TX = board.GP0
-UART_RX = board.GP1
+UART_RX = board.GP1  # receive only: the GPS is never sent anything, so GP0 stays free
 
 BAUD = int(os.getenv("NMEA_SERIAL_BAUD", "4800"))
 # Average 1 Hz fixes into UTC-aligned windows of this many seconds; 0 sends
@@ -52,6 +51,7 @@ WATCHDOG_SECONDS = float(os.getenv("WATCHDOG_SECONDS", "8"))
 # Console status line interval (seconds); 0 disables.
 STATUS_SECONDS = float(os.getenv("STATUS_SECONDS", "60"))
 HTTP_TIMEOUT_SECONDS = 5
+NTP_TIMEOUT_SECONDS = 5  # below the watchdog timeout
 # Longest a UART read waits for data, so the loop (and the LED) runs at ~20 Hz.
 UART_POLL_SECONDS = 0.05
 WIFI_CONNECT_TIMEOUT_SECONDS = 5  # below the watchdog timeout
@@ -122,13 +122,17 @@ def set_clock(parts):
 def sync_clock_ntp(pool):
     """Best effort: a ship often has no NTP; GPS time (RMC) takes over then."""
     try:
-        rtc.RTC().datetime = adafruit_ntp.NTP(pool, tz_offset=0).datetime
+        feed_watchdog()
+        ntp = adafruit_ntp.NTP(pool, tz_offset=0, socket_timeout=NTP_TIMEOUT_SECONDS)
+        rtc.RTC().datetime = ntp.datetime
         health.clock_source = "ntp"
         print("Clock set from NTP:", iso_utc_now())
         return True
     except Exception as exc:
         print("NTP unavailable; will set clock from GPS:", exc)
         return False
+    finally:
+        feed_watchdog()
 
 
 _last_wifi_attempt = None
@@ -159,7 +163,7 @@ def ensure_wifi():
 
 
 def send_batch(session, batch):
-    """Deliver one batch; True when the server accepted it.
+    """Deliver one batch: None when the server accepted it, else a short reason.
 
     The only transport-specific code in the firmware: an MQTT publish would
     replace this function, with everything else unchanged.
@@ -172,9 +176,14 @@ def send_batch(session, batch):
         endpoint, json={"positions": batch}, headers=headers, timeout=HTTP_TIMEOUT_SECONDS
     )
     try:
-        return response.status_code == 201
+        code = response.status_code
     finally:
         response.close()
+    if code == 201:
+        return None
+    if code in (401, 403):
+        return "HTTP {} (check TRACKER_INGEST_TOKEN)".format(code)
+    return "HTTP {}".format(code)
 
 
 def free_memory():
@@ -187,26 +196,27 @@ def free_memory():
 def flush(session, pending):
     """Send up to SEND_BATCHES_PER_FLUSH batches from RAM, newest first.
 
-    Returns True unless a send failed (or WiFi is down); unsent fixes stay
-    in `pending` either way.
+    Returns None if everything sent went through, else the reason it stopped
+    (WiFi down, an HTTP status, a network error); unsent fixes stay in
+    `pending` either way.
     """
     if not ensure_wifi():
-        return False
+        return "WiFi down"
     for _ in range(SEND_BATCHES_PER_FLUSH):
         batch = pending.newest(BATCH_SIZE)
         if not batch:
             break
         feed_watchdog()
         try:
-            ok = send_batch(session, batch)
+            error = send_batch(session, batch)
         except Exception as exc:
-            print("Send failed:", exc)
-            ok = False
+            error = repr(exc)
         feed_watchdog()
-        if not ok:
-            return False
+        if error:
+            print("Send failed:", error)
+            return error
         pending.remove_newest(len(batch))
-    return True
+    return None
 
 
 def queue_fix(pending, position):
@@ -221,6 +231,9 @@ def run():
     if not INGEST_URL:
         raise RuntimeError("TRACKER_API_URL must be set in settings.toml")
 
+    # Watchdog from the start: a hung WiFi connect or DNS lookup at boot
+    # reboots instead of leaving the board stuck with the LED solid.
+    start_watchdog()
     pool = socketpool.SocketPool(wifi.radio)
     session = adafruit_requests.Session(pool, ssl.create_default_context())
     clock_synced_at = None
@@ -228,7 +241,9 @@ def run():
         clock_synced_at = time.monotonic()
 
     # A larger receive buffer (several seconds of NMEA) rides out slow sends.
-    uart = busio.UART(UART_TX, UART_RX, baudrate=BAUD, timeout=UART_POLL_SECONDS, receiver_buffer_size=2048)
+    uart = busio.UART(
+        tx=None, rx=UART_RX, baudrate=BAUD, timeout=UART_POLL_SECONDS, receiver_buffer_size=2048
+    )
     fixes = FixFilter()
     averager = Averager(AVERAGE_SECONDS) if AVERAGE_SECONDS > 0 else None
     pending = FixBuffer(MAX_BUFFER, MIN_FREE_BYTES)
@@ -239,7 +254,6 @@ def run():
     wifi_up = wifi.radio.connected
     next_wifi_check = 0
 
-    start_watchdog()
     while True:
         feed_watchdog()
         # Take what's waiting without blocking; with nothing waiting, read(1)
@@ -287,13 +301,12 @@ def run():
                 queue_fix(pending, position)
 
         now = time.monotonic()
-        link_ok = retry_seconds == FLUSH_SECONDS
         # A full batch flushes early only while sends succeed; otherwise honor the backoff.
-        if len(pending) and (now >= next_flush or (link_ok and len(pending) >= BATCH_SIZE)):
-            ok = flush(session, pending)
-            health.on_send(ok)
+        if len(pending) and (now >= next_flush or (health.send_ok is not False and len(pending) >= BATCH_SIZE)):
+            error = flush(session, pending)
+            health.on_send(error)
             # Back off while sends fail so a dead link doesn't stall UART reads every flush.
-            retry_seconds = FLUSH_SECONDS if ok else min(retry_seconds * 2, MAX_RETRY_SECONDS)
+            retry_seconds = FLUSH_SECONDS if error is None else min(retry_seconds * 2, MAX_RETRY_SECONDS)
             next_flush = now + retry_seconds
 
         if now >= next_wifi_check:  # a query to the WiFi chip; once a second is plenty

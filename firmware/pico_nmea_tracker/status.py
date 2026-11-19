@@ -35,6 +35,7 @@ class Health:
         self.last_fix_at = None
         self.last_line = ""
         self.send_ok = None  # None until the first send attempt
+        self.send_error = None  # reason the last send failed
         self.clock_source = "unset"  # "ntp" or "gps" once set
         self._reset_counts()
 
@@ -58,8 +59,10 @@ class Health:
             self.fixes += 1
             self.last_fix_at = now
 
-    def on_send(self, ok):
-        self.send_ok = ok
+    def on_send(self, error):
+        """Result of a send attempt: None on success, else a short reason."""
+        self.send_ok = error is None
+        self.send_error = error
 
     def gps_state(self, now):
         """'ok', 'no_fix' (valid NMEA, no fix), 'garbled' (bytes, no valid NMEA), or 'no_data'."""
@@ -80,9 +83,15 @@ class Health:
         gps_part = "gps={} lines={} fixes={}".format(gps, self.lines, self.fixes)
         if gps != "ok":
             gps_part += " bytes={}".format(self.bytes)
-            if self.last_line:
-                gps_part += " last={}".format(_printable(self.last_line))
-        send = "-" if self.send_ok is None else ("ok" if self.send_ok else "failing")
+            last = _printable(self.last_line)
+            if last:
+                gps_part += " last={}".format(last)
+        if self.send_ok is None:
+            send = "-"
+        elif self.send_ok:
+            send = "ok"
+        else:
+            send = "failing ({})".format(self.send_error)
         self._reset_counts()
         return "Status: {} | wifi={} send={} queued={} | clock={} | mem={}".format(
             gps_part,

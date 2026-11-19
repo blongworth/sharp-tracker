@@ -262,8 +262,10 @@ bytes received and the last line from the GPS.
 | `garbled` | Bytes arriving, but no valid NMEA sentences | `NMEA_SERIAL_BAUD`; signal inverted (RS-232 straight into GP1) |
 | `no_data` | Nothing on GP1 | GPS TX → GP1, common ground, GPS power |
 
-`send=` is `ok`, `failing` (the last send failed; fixes queue in RAM, see
-`queued=`), or `-` (nothing sent yet). `clock=` is `ntp`, `gps`, or `unset`
+`send=` is `ok`, `-` (nothing sent yet), or `failing (<reason>)`: the last
+send failed and fixes are queuing in RAM (see `queued=`). The reason is
+`WiFi down`, a network error, or an HTTP status from the server; `HTTP 401` or
+`403` means `TRACKER_INGEST_TOKEN` doesn't match the server's. `clock=` is `ntp`, `gps`, or `unset`
 (nothing is logged until it's set).
 
 #### LED
@@ -301,6 +303,9 @@ Then break things on purpose:
 | --- | --- |
 | Stop the laptop server ~5 min, restart | `Send failed` with growing gaps (≤ 60 s); after restart the newest fixes arrive first, then the backlog; no gaps or duplicates in the laptop DB |
 | Turn off the WiFi access point ~5 min | `WiFi unavailable` about every 30–60 s, fixes keep queuing, no reboot; everything arrives after WiFi returns |
+| Keep WiFi up but cut its internet (unplug the router's WAN, or use an isolated AP), with `WATCHDOG_SECONDS = "8"`; also boot the board this way | `Send failed` with a network error, fixes keep queuing, **no watchdog reboots** (a reboot would lose the queue). If it reboots, DNS or TLS is blocking longer than the watchdog allows |
+| Stop the laptop server 30+ min, restart | Sends resume after the restart without a reboot (if they keep failing until a reboot, the HTTP session isn't recovering) |
+| Wrong `TRACKER_INGEST_TOKEN` | `Send failed: HTTP 401 (check TRACKER_INGEST_TOKEN)`, `send=failing (HTTP 401 ...)`, 2 LED blinks |
 | Shield the GPS antenna / unplug the GPS mid-window | No new `Fix:` lines; the partial window is still sent at the window's end with a lower `n` |
 | Boot with no NTP and the GPS indoors | Nothing logged until the first valid RMC sets the clock |
 | `WATCHDOG_SECONDS = "8"`, then add `time.sleep(20)` inside the main loop | Board reboots after ~8 s (remove the sleep afterwards) |

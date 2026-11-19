@@ -9,7 +9,7 @@ CIRCUITPY_WIFI_PASSWORD = "change-me"
 TRACKER_API_URL = "https://your-ingest-service.up.railway.app"
 TRACKER_INGEST_TOKEN = "change-me"
 
-# NMEA source wired to UART0 (GP0/GP1). 4800 is the common NMEA default;
+# NMEA source wired to UART0 RX (GP1). 4800 is the common NMEA default;
 # some AIS/GPS units use 38400.
 NMEA_SERIAL_BAUD = "4800"
 

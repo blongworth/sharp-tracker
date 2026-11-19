@@ -146,17 +146,19 @@ def test_status_line_reports_and_resets_counts():
     h.on_bytes(0, 200)
     h.on_line(0, GOOD, True, {"latitude": 41.5})
     h.on_line(1, GOOD, True, {"latitude": 41.5})
-    h.on_send(True)
+    h.on_send(None)
     line = h.status_line(1, True, 3, 81234)
     assert line == (
         "Status: gps=ok lines=2 fixes=2 | wifi=up send=ok queued=3 | clock=gps | mem=81234"
     )
     h.on_bytes(20, 70)  # the last fix (t=1) is stale by now
     h.on_line(20, "$GPRMC,120000.00,V,,,,,,,151126,,,N*4E\r", True, None)
-    h.on_send(False)
+    h.on_send("HTTP 401 (check TRACKER_INGEST_TOKEN)")
     line = h.status_line(20, False, 4, None)
     assert line.startswith("Status: gps=no_fix lines=1 fixes=0 bytes=70 last=$GPRMC,120000.00,V,")
-    assert line.endswith("| wifi=down send=failing queued=4 | clock=gps | mem=-")
+    assert line.endswith(
+        "| wifi=down send=failing (HTTP 401 (check TRACKER_INGEST_TOKEN)) queued=4 | clock=gps | mem=-"
+    )
     assert "\r" not in line
 
 
