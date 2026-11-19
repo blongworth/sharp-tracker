@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from fixes import FixBuffer, FixFilter, fix_time_parts, iso_utc, weekday
+from fixes import FixBuffer, FixFilter, ascii_text, fix_time_parts, iso_utc, weekday
 from status import LED_FLICKER, LED_NETWORK, LED_NO_FIX, LED_NO_GPS, LED_OK, Health, led_code, led_on
 
 FIRMWARE = Path(__file__).resolve().parents[1] / "firmware" / "pico_nmea_tracker"
@@ -99,6 +99,13 @@ def test_buffer_never_drops_the_only_fix():
     buf = FixBuffer(max_fixes=0, min_free_bytes=10**9)
     assert not buf.add(fix(0), free_bytes=0)
     assert len(buf) == 1
+
+
+def test_ascii_text_drops_line_noise(sample_lines):
+    good = sample_lines[0]
+    assert ascii_text(good.encode()) == good
+    # 0xFF is invalid UTF-8: CircuitPython's decode() would raise on it.
+    assert ascii_text(b"\xff\x80" + good.encode() + b"\xfe") == good
 
 
 def test_fix_filter_flags_valid_sentences(sample_lines):
@@ -270,3 +277,17 @@ def test_deploy_fails_when_a_file_is_not_listed(tmp_path, monkeypatch):
     )
     with pytest.raises(SystemExit, match="status.py"):
         deploy.deploy(tmp_path, skip_libs=True)
+
+
+def test_code_py_decodes_uart_bytes_via_ascii_text():
+    """CircuitPython's bytes.decode() raises on invalid UTF-8 whatever `errors` says,
+    and CPython (the simulator) can't show that: decode only through ascii_text()."""
+    tree = ast.parse((FIRMWARE / "code.py").read_text())
+    calls = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "decode"
+    ]
+    assert calls == [], f"code.py calls .decode() directly on lines {calls}"

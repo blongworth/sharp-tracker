@@ -29,7 +29,7 @@ import adafruit_ntp
 import adafruit_requests
 
 from averaging import Averager, epoch_from_parts
-from fixes import FixBuffer, FixFilter, fix_time_parts, iso_utc, weekday
+from fixes import FixBuffer, FixFilter, ascii_text, fix_time_parts, iso_utc, weekday
 from status import LED_FLICKER, Health, led_on
 
 UART_TX = board.GP0
@@ -252,7 +252,7 @@ def run():
                 line_buf = line_buf[-256:]  # garbled input with no line ends
             while b"\n" in line_buf:
                 raw_line, _, line_buf = line_buf.partition(b"\n")
-                text = raw_line.decode("ascii", "ignore")
+                text = ascii_text(raw_line)
                 try:
                     position = fixes.process(text)
                 except Exception:

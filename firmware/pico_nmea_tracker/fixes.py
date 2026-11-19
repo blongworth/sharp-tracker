@@ -48,6 +48,18 @@ class FixFilter:
         return position
 
 
+def ascii_text(raw):
+    """bytes -> str, dropping non-ASCII bytes (line noise, e.g. at GPS power-up).
+
+    CircuitPython's decode() ignores its errors argument and raises UnicodeError
+    on invalid UTF-8, so filter instead. Valid NMEA is ASCII, so nothing is lost.
+    """
+    try:
+        return raw.decode("ascii")
+    except UnicodeError:
+        return bytes(b for b in raw if b < 0x80).decode("ascii")
+
+
 def fix_time_parts(fix_time):
     """'2026-11-15T12:35:19+00:00' -> (2026, 11, 15, 12, 35, 19), or None."""
     if not fix_time or len(fix_time) < 19:

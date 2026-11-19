@@ -83,7 +83,8 @@ class World:
         if self.gps == "silent":
             return b""
         if self.gps == "garbled":
-            return bytes(range(0x80, 0xC0))  # no '$', no line ends
+            # Invalid UTF-8 with line ends, like a wrong baud rate or power-up noise.
+            return bytes(range(0x80, 0xC0)) + b"\r\n"
         return nmea_gen.sentences(second, self.rmc, valid=self.gps == "fix")
 
 
