@@ -113,7 +113,8 @@ class Averager:
         lon = self._lon / n
         lon = (lon + 180.0) % 360.0 - 180.0
         course = None
-        if self._cog_n and math.hypot(self._ve, self._vn) > 1e-9:
+        # sqrt, not math.hypot: CircuitPython's math has no hypot.
+        if self._cog_n and math.sqrt(self._ve * self._ve + self._vn * self._vn) > 1e-9:
             course = math.degrees(math.atan2(self._ve, self._vn)) % 360.0
         start = self._start
         return {

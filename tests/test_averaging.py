@@ -169,3 +169,24 @@ def test_averaging_module_is_circuitpython_safe():
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
     assert imported == {"math"}
+
+
+# CircuitPython's math module (shared-bindings/math); notably no hypot, dist, or isclose.
+CIRCUITPYTHON_MATH = {
+    "acos", "asin", "atan", "atan2", "ceil", "copysign", "cos", "degrees", "e",
+    "exp", "fabs", "floor", "fmod", "frexp", "isfinite", "isinf", "isnan", "ldexp",
+    "log", "modf", "pi", "pow", "radians", "sin", "sqrt", "tan", "trunc",
+}
+
+
+def test_averaging_uses_only_circuitpython_math():
+    """CPython's math has more (hypot crashed the Pico); the import check can't see that."""
+    src = Path(__file__).resolve().parents[1] / "sharp_tracker" / "averaging.py"
+    used = {
+        node.attr
+        for node in ast.walk(ast.parse(src.read_text()))
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "math"
+    }
+    assert used <= CIRCUITPYTHON_MATH, used - CIRCUITPYTHON_MATH

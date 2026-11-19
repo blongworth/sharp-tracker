@@ -13,6 +13,7 @@ averaging.py (copied from sharp_tracker/; shared with the collector).
 import gc
 import os
 import time
+import traceback
 
 import board
 import busio
@@ -310,7 +311,9 @@ try:
 except Exception as exc:
     # Unexpected error (WiFi outages are handled in the loop). Reboot cleanly
     # rather than retry in place. Unsent fixes in RAM are lost.
-    print("Fatal error, rebooting in 5 s:", exc)
+    # repr and traceback: some errors (e.g. MemoryError) have an empty message.
+    print("Fatal error, rebooting in 5 s:", repr(exc))
+    traceback.print_exception(exc)
     flicker_until = time.monotonic() + 5  # under the 8 s watchdog
     while time.monotonic() < flicker_until:
         set_led(led_on(LED_FLICKER, time.monotonic()))
