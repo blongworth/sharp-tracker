@@ -5,6 +5,9 @@ Serves:
   GET  /track           -> Server-Sent Events stream of the latest position
   GET  /api/positions   -> initial position window for the track line
   GET  /api/waypoints   -> current NES-LTER stations
+  GET  /api/eta         -> distance / time to go / ETA to a station, a point, or the predicted next station
+  GET  /api/eta/stations -> the same for every station, nearest first
+  GET  /eta             -> static page listing time to go
   GET  /health          -> health check (from api.router)
   POST /positions/batch -> token-gated ingest (from api.router)
 
@@ -29,12 +32,13 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 import requests
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import router as ingest_router
 from .db import get_engine, latest_positions, track_positions
+from .eta import bearing_deg, distance_nm, mean_sog, predict_next, time_to_go
 
 LOG = logging.getLogger(__name__)
 
@@ -45,6 +49,10 @@ LIVE_REFRESH_SECONDS = float(os.getenv("LIVE_REFRESH_SECONDS", "10"))
 # stamped at its midpoint, so ~3 windows avoids false alarms from one gap.
 STALE_AFTER_SECONDS = float(os.getenv("STALE_AFTER_SECONDS", "180"))
 WAYPOINTS_URL = "https://nes-lter-api.whoi.edu/api/stations/file.csv"
+# /api/eta defaults when a client names no target or speed.
+ETA_DEFAULT_TARGET = os.getenv("ETA_DEFAULT_TARGET", "auto")  # "auto" or a station id
+ETA_PLANNED_SPEED_KN = os.getenv("ETA_PLANNED_SPEED_KN")  # unset: use recent mean SOG
+ETA_SOG_MINUTES = float(os.getenv("ETA_SOG_MINUTES", "30"))
 
 
 @asynccontextmanager
@@ -76,21 +84,13 @@ def _compact_position(row: dict) -> dict:
     }
 
 
-def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Compass bearing (0-360) from point 1 to point 2, planar approximation."""
-    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
-    x = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2))
-         - math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(math.radians(lon2 - lon1)))
-    return (math.degrees(math.atan2(y, x)) + 360) % 360
-
-
 def _heading(row: dict, prev: dict | None) -> float | None:
     """COG when present, otherwise the direction of travel between the last two fixes."""
     if row.get("course_deg") is not None:
         return float(row["course_deg"])
     if prev is None:
         return None
-    return _bearing_deg(prev["latitude"], prev["longitude"], row["latitude"], row["longitude"])
+    return bearing_deg(prev["latitude"], prev["longitude"], row["latitude"], row["longitude"])
 
 
 async def _position_stream() -> AsyncIterator[str]:
@@ -177,3 +177,153 @@ def positions(
     """Positions within the last `window_hours`, thinned to at most `max_points`."""
     since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     return [_compact_position(row) for row in track_positions(since=since, max_points=max_points)]
+
+
+@app.get("/eta")
+def eta_page() -> FileResponse:
+    return FileResponse(LIVE_DIR / "eta.html")
+
+
+def _stations() -> list[dict[str, Any]]:
+    """Station list for ETA lookups; 503 when the NES-LTER API can't be reached."""
+    try:
+        stations = load_waypoints()
+    except Exception:
+        stations = []
+    if not stations:
+        raise HTTPException(status_code=503, detail="Station list unavailable")
+    return stations
+
+
+def _speed(speed_kn: float | None, now: datetime) -> tuple[float | None, str]:
+    """Planned speed if given (query, then ETA_PLANNED_SPEED_KN), else recent mean SOG."""
+    if speed_kn is not None:
+        return speed_kn, "planned"
+    if ETA_PLANNED_SPEED_KN:
+        return float(ETA_PLANNED_SPEED_KN), "planned"
+    recent = track_positions(since=now - timedelta(minutes=ETA_SOG_MINUTES), max_points=10000)
+    return mean_sog(recent), f"sog_{ETA_SOG_MINUTES:g}min"
+
+
+def _epoch(t: datetime | None) -> int | None:
+    return int(t.timestamp()) if t is not None else None
+
+
+def _eta_fields(fix: dict | None, lat: float, lon: float, speed: float | None) -> dict:
+    """distance/bearing/ttg/eta from the fix to (lat, lon); nulls without a fix.
+
+    ETA counts from the fix time, not now, so clients can count down from it.
+    """
+    if fix is None:
+        return {"distance_nm": None, "bearing_deg": None, "ttg_s": None, "eta": None, "eta_epoch": None}
+    d = distance_nm(fix["latitude"], fix["longitude"], lat, lon)
+    ttg = time_to_go(d, speed)
+    eta = fix["display_time"] + timedelta(seconds=ttg) if ttg is not None else None
+    return {
+        "distance_nm": round(d, 2),
+        "bearing_deg": round(bearing_deg(fix["latitude"], fix["longitude"], lat, lon), 1),
+        "ttg_s": ttg,
+        "eta": eta.isoformat() if eta else None,
+        "eta_epoch": _epoch(eta),
+    }
+
+
+def _fix_fields(fix: dict | None, now: datetime) -> dict:
+    t = fix["display_time"] if fix else None
+    age = round((now - t).total_seconds()) if t else None
+    return {
+        "fix_time": t.isoformat() if t else None,
+        "fix_epoch": _epoch(t),
+        "fix_age_s": age,
+        "stale": age is not None and age > STALE_AFTER_SECONDS,
+    }
+
+
+def _target(station: dict) -> dict:
+    return {
+        "station": station["station"],
+        "name": station["name"],
+        "lat": station["lat"],
+        "lon": station["lon"],
+    }
+
+
+@app.get("/api/eta")
+def eta(
+    station: str | None = None,
+    lat: float | None = Query(None, ge=-90, le=90),
+    lon: float | None = Query(None, ge=-180, le=180),
+    name: str | None = None,
+    speed_kn: float | None = Query(None, gt=0, le=50),
+) -> dict[str, Any]:
+    """Distance, time to go, and ETA from the latest fix to a target.
+
+    Target: `station`, or a point (`lat` + `lon`, optional `name`), or neither
+    for ETA_DEFAULT_TARGET ("auto" predicts the nearest station ahead).
+    Every key is always present (nulls when unknown) so small clients can parse it.
+    """
+    if (lat is None) != (lon is None):
+        raise HTTPException(status_code=422, detail="lat and lon go together")
+    now = datetime.now(timezone.utc)
+    rows = latest_positions(2)
+    fix = rows[0] if rows else None
+    reason = None
+
+    if lat is not None:
+        target = {"mode": "point", "station": None, "name": name or "Point", "lat": lat, "lon": lon}
+    else:
+        wanted = station or (None if ETA_DEFAULT_TARGET == "auto" else ETA_DEFAULT_TARGET)
+        stations = _stations()
+        if wanted is not None:
+            match = next((s for s in stations if s["station"] == wanted), None)
+            if match is None:
+                raise HTTPException(status_code=404, detail=f"Unknown station {wanted!r}")
+            target = {"mode": "station", **_target(match)}
+        elif fix is None:
+            target, reason = None, "no position yet"
+        else:
+            heading = _heading(fix, rows[1] if len(rows) > 1 else None)
+            match = predict_next(fix["latitude"], fix["longitude"], heading, stations)
+            target = {"mode": "auto", **_target(match)} if match else None
+            if target is None:
+                reason = "no course yet" if heading is None else "no station ahead"
+
+    speed, source = _speed(speed_kn, now)
+    if target:
+        fields = _eta_fields(fix, target["lat"], target["lon"], speed)
+    else:
+        fields = _eta_fields(None, 0.0, 0.0, speed)
+    return {
+        "target": target,
+        "reason": reason,
+        **fields,
+        "speed_kn": round(speed, 2) if speed is not None else None,
+        "speed_source": source,
+        **_fix_fields(fix, now),
+    }
+
+
+@app.get("/api/eta/stations")
+def eta_stations(speed_kn: float | None = Query(None, gt=0, le=50)) -> list[dict[str, Any]]:
+    """Every station with distance / time to go / ETA from the latest fix, nearest first."""
+    now = datetime.now(timezone.utc)
+    stations = _stations()
+    fix = latest_positions(1)
+    fix = fix[0] if fix else None
+    speed, _ = _speed(speed_kn, now)
+    result = []
+    for s in stations:
+        fields = _eta_fields(fix, s["lat"], s["lon"], speed)
+        result.append(
+            {
+                "station": s["station"],
+                "name": s["name"],
+                "distance_nm": fields["distance_nm"],
+                "ttg_s": fields["ttg_s"],
+                "eta": fields["eta"],
+                "eta_epoch": fields["eta_epoch"],
+            }
+        )
+    if fix is not None:
+        result.sort(key=lambda r: r["distance_nm"])
+    return result

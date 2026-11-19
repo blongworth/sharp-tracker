@@ -186,3 +186,115 @@ def test_no_collector_without_collect(engine, monkeypatch):
     monkeypatch.delenv("COLLECT", raising=False)
     with TestClient(live.app):
         assert not started.wait(0.2)
+
+
+# --- ETA ----------------------------------------------------------------------
+
+ETA_STATIONS = [
+    {"station": "L1", "name": "LTER1", "lat": 41.2, "lon": -70.88, "depth_m": 30.0},  # behind
+    {"station": "L5", "name": "LTER5", "lat": 40.9, "lon": -70.88, "depth_m": 60.0},  # 6 nm ahead
+    {"station": "L9", "name": "LTER9", "lat": 40.5, "lon": -70.88, "depth_m": 90.0},  # 30 nm ahead
+]
+ETA_KEYS = {
+    "target", "reason", "distance_nm", "bearing_deg", "ttg_s", "eta", "eta_epoch",
+    "speed_kn", "speed_source", "fix_time", "fix_epoch", "fix_age_s", "stale",
+}
+
+
+@pytest.fixture
+def stations(monkeypatch):
+    monkeypatch.setattr(live, "load_waypoints", lambda: ETA_STATIONS)
+
+
+def steaming_south(client, minutes=10, sog=10.0, cog=180.0):
+    """Fixes every minute for `minutes`, the newest 30 s ago at 41.0 N, 70.88 W."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    fixes = []
+    for i in range(minutes):
+        t = (now - timedelta(seconds=30 + 60 * i)).isoformat()
+        fixes.append({
+            **FIX, "received_at": t, "fix_time": t, "latitude": 41.0 + i * sog / 3600,
+            "longitude": -70.88, "speed_knots": sog, "course_deg": cog, "raw": f"$eta{i}",
+        })
+    assert client.post("/positions/batch", json={"positions": fixes}).status_code == 201
+    return now - timedelta(seconds=30)
+
+
+def test_eta_to_station_from_mean_sog(client, stations):
+    fix_time = steaming_south(client)
+    r = client.get("/api/eta?station=L5").json()
+    assert set(r) == ETA_KEYS
+    assert r["target"] == {"mode": "station", "station": "L5", "name": "LTER5", "lat": 40.9, "lon": -70.88}
+    assert r["distance_nm"] == pytest.approx(6.0, abs=0.01)
+    assert r["bearing_deg"] == 180.0
+    assert (r["speed_kn"], r["speed_source"]) == (10.0, "sog_30min")
+    assert r["ttg_s"] == pytest.approx(2160, abs=5)
+    assert r["fix_epoch"] == int(fix_time.timestamp())
+    assert r["eta_epoch"] == r["fix_epoch"] + r["ttg_s"]
+    assert r["eta"] == datetime.fromtimestamp(r["eta_epoch"], timezone.utc).isoformat()
+    assert r["stale"] is False and 25 <= r["fix_age_s"] <= 60
+
+
+def test_eta_planned_speed_overrides_sog(client, stations, monkeypatch):
+    steaming_south(client)
+    r = client.get("/api/eta?station=L5&speed_kn=12").json()
+    assert (r["speed_kn"], r["speed_source"]) == (12.0, "planned")
+    assert r["ttg_s"] == pytest.approx(1800, abs=5)
+    monkeypatch.setattr(live, "ETA_PLANNED_SPEED_KN", "6")
+    assert client.get("/api/eta?station=L5").json()["ttg_s"] == pytest.approx(3600, abs=5)
+
+
+def test_eta_auto_predicts_nearest_station_ahead(client, stations):
+    steaming_south(client)
+    r = client.get("/api/eta").json()
+    assert r["target"]["mode"] == "auto"
+    assert r["target"]["station"] == "L5"  # not L1 (behind) or L9 (farther)
+
+
+def test_eta_auto_nothing_ahead(client, stations):
+    steaming_south(client, cog=90.0)
+    r = client.get("/api/eta").json()
+    assert set(r) == ETA_KEYS
+    assert (r["target"], r["reason"]) == (None, "no station ahead")
+    assert r["ttg_s"] is None and r["fix_time"] is not None
+
+
+def test_eta_default_target_from_env(client, stations, monkeypatch):
+    steaming_south(client)
+    monkeypatch.setattr(live, "ETA_DEFAULT_TARGET", "L9")
+    assert client.get("/api/eta").json()["target"]["station"] == "L9"
+
+
+def test_eta_to_point(client, monkeypatch):
+    steaming_south(client)
+    monkeypatch.setattr(live, "load_waypoints", lambda: [])  # stations not needed
+    r = client.get("/api/eta?lat=41.1&lon=-70.88&name=Buoy").json()
+    assert r["target"] == {"mode": "point", "station": None, "name": "Buoy", "lat": 41.1, "lon": -70.88}
+    assert r["bearing_deg"] == pytest.approx(0, abs=0.1)
+    assert client.get("/api/eta?lat=41.1").status_code == 422
+
+
+def test_eta_errors(client, stations, monkeypatch):
+    steaming_south(client)
+    assert client.get("/api/eta?station=NOPE").status_code == 404
+    monkeypatch.setattr(live, "load_waypoints", lambda: [])
+    assert client.get("/api/eta?station=L5").status_code == 503
+    assert client.get("/api/eta/stations").status_code == 503
+
+
+def test_eta_without_fixes(client, stations):
+    r = client.get("/api/eta?station=L5").json()
+    assert set(r) == ETA_KEYS
+    assert r["target"]["station"] == "L5"
+    assert r["distance_nm"] is None and r["ttg_s"] is None and r["fix_time"] is None
+    assert r["stale"] is False
+    auto = client.get("/api/eta").json()
+    assert (auto["target"], auto["reason"]) == (None, "no position yet")
+
+
+def test_eta_stations_nearest_first(client, stations):
+    steaming_south(client)
+    rows = client.get("/api/eta/stations").json()
+    assert [r["station"] for r in rows] == ["L5", "L1", "L9"]
+    assert set(rows[0]) == {"station", "name", "distance_nm", "ttg_s", "eta", "eta_epoch"}
+    assert rows[0]["ttg_s"] == pytest.approx(2160, abs=5)
