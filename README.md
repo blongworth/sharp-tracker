@@ -159,6 +159,47 @@ uv run sharp-tracker --collect
 Set the same `TRACKER_INGEST_TOKEN` on the Railway web service. The ship-side
 map at http://127.0.0.1:8090 keeps working with no internet connection.
 
+## Time to go / ETA
+
+The app computes distance, time to go (TTG) and ETA from the latest fix to a
+target, which is one of:
+- a NES-LTER station;
+- a point you pick on the map;
+- **auto**: the nearest station within ±30° of the ship's course, more than
+  0.5 nm away, so the station you're on is skipped.
+
+Speed is the mean SOG over the last 30 min unless you give a planned speed.
+There's no TTG when the ship is stopped (under 0.5 kn). The ETA counts from the
+fix time, so clients count TTG down between updates.
+
+Where to see it:
+- **Map:** use the HUD's **Target** dropdown, click a station dot, or
+  right-click / long-press the map to target a point. It shows Dist, TTG and
+  ETA, and the line goes to the target.
+- **`/eta` page:** the chosen target in large type, plus every station sorted
+  by distance with its TTG and ETA. Tap a row to target it.
+
+Each browser keeps its own target and planned speed (in `localStorage`), and
+the map and `/eta` share them.
+
+API:
+
+| Request | Returns |
+| --- | --- |
+| `GET /api/eta?station=L5` | ETA to a station (404 if unknown; 503 if the station list can't be loaded) |
+| `GET /api/eta?lat=41.1&lon=-70.9&name=Buoy` | ETA to a point |
+| `GET /api/eta` | ETA to `ETA_DEFAULT_TARGET` (default `auto`) |
+| `...&speed_kn=10` | Use a planned speed instead of mean SOG |
+| `GET /api/eta/stations` | `{"stations": [...]}`: every station, nearest first |
+
+Every `/api/eta` response has the same keys, with nulls when a value is
+unknown:
+- `target` and `reason` (why there's no target, e.g. `no station ahead`);
+- `distance_nm`, `bearing_deg`, `ttg_s`;
+- `eta` (ISO) and `eta_epoch`;
+- `speed_kn` and `speed_source` (`sog_30min` or `planned`);
+- `fix_time`, `fix_epoch`, `fix_age_s` and `stale`.
+
 ## Pico W firmware (CircuitPython NMEA bridge)
 
 `firmware/pico_nmea_tracker/` is an alternative to running the Python collector on a
@@ -320,6 +361,46 @@ clock, and memory. It covers server and WiFi outages, the RAM limits, the GPS
 clock, and NTP. It can't prove the CircuitPython APIs behave as stubbed, so do
 a smoke test on a real board before deploying.
 
+## Garmin watch app (Connect IQ, Forerunner 165)
+
+`garmin/sharp_eta/` is a Connect IQ widget with a glance. It shows the target,
+TTG counting down every second, ETA (local), distance and fix age. Press
+SELECT to pick **Auto (ahead)** or a station (nearest first). The choice is
+kept on the watch.
+
+**How it connects:** the watch has no internet of its own.
+`makeWebRequest` goes over Bluetooth to the Garmin Connect app on the paired
+phone, which fetches `/api/eta`. So:
+- the phone must be within Bluetooth range;
+- the phone must be able to reach the server;
+- Connect IQ expects **https**, which Railway provides. A plain-HTTP ship
+  server may be refused, especially on iOS ("Needs https://" on the watch).
+
+The glance never fetches. It shows the last data the widget fetched, counted
+down, and dims it when the fix is more than 5 min old. Refresh happens every
+60 s while the widget is open.
+
+**Build and test.** You need the Connect IQ SDK and the `fr165` device files,
+installed with Garmin's SDK Manager (Garmin account required):
+
+```bash
+cd garmin/sharp_eta
+make key        # once: developer key in garmin/ (gitignored)
+make test       # Monkey C unit tests in the simulator
+make sim        # run in the simulator against http://localhost:8090
+make release    # bin/sharp_eta_release.prg for the watch
+```
+
+**Install on the watch.**
+1. Copy `bin/sharp_eta_release.prg` to the watch's `GARMIN/APPS` folder over
+   USB. On macOS, use Garmin Express or OpenMTP to see the watch's files.
+2. In Garmin Connect on the phone, set the app's **Server URL** (e.g.
+   `https://your-app.up.railway.app`) and optionally a planned speed.
+
+The unit tests in `source/test/` parse `resources/jsonData/eta_sample.json`.
+`tests/test_server.py` checks that the real `/api/eta` output has the same
+keys and types, so a format change breaks a test on one side or the other.
+
 ## Database configuration
 
 Local default is SQLite:
@@ -378,5 +459,8 @@ STALE_AFTER_SECONDS=180     # map flags the feed stale past this fix age
 LIVE_HOST=127.0.0.1
 LIVE_PORT=8090
 LIVE_REFRESH_SECONDS=10
+ETA_DEFAULT_TARGET=auto     # /api/eta target when none is given: auto or a station id
+ETA_PLANNED_SPEED_KN=       # unset: mean SOG; set to use a planned speed by default
+ETA_SOG_MINUTES=30          # window for the mean SOG
 LOG_LEVEL=INFO
 ```

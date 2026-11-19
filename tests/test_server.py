@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -294,7 +295,7 @@ def test_eta_without_fixes(client, stations):
 
 def test_eta_stations_nearest_first(client, stations):
     steaming_south(client)
-    rows = client.get("/api/eta/stations").json()
+    rows = client.get("/api/eta/stations").json()["stations"]
     assert [r["station"] for r in rows] == ["L5", "L1", "L9"]
     assert set(rows[0]) == {"station", "name", "distance_nm", "ttg_s", "eta", "eta_epoch"}
     assert rows[0]["ttg_s"] == pytest.approx(2160, abs=5)
@@ -307,3 +308,35 @@ def test_eta_page_and_script_served(client):
     assert script.status_code == 200
     assert script.headers["content-type"].startswith("text/javascript")
     assert "/eta.js" in client.get("/").text
+
+
+GARMIN_SAMPLE = (
+    Path(__file__).resolve().parents[1] / "garmin" / "sharp_eta" / "resources" / "jsonData" / "eta_sample.json"
+)
+
+
+def _shape(value):
+    """Keys and JSON types, recursively; None matches any type (nullable fields)."""
+    if isinstance(value, dict):
+        return {k: _shape(v) for k, v in value.items()}
+    return None if value is None else type(value).__name__
+
+
+def _same_shape(real, sample):
+    if isinstance(sample, dict) and isinstance(real, dict):
+        return set(real) == set(sample) and all(_same_shape(real[k], sample[k]) for k in sample)
+    return real is None or sample is None or type(real) is type(sample)
+
+
+def test_garmin_sample_matches_api(client, stations):
+    """The watch's unit tests parse eta_sample.json; keep it in step with /api/eta."""
+    sample = json.loads(GARMIN_SAMPLE.read_text())
+    steaming_south(client)
+    real = {
+        "station": client.get("/api/eta?station=L5").json(),
+        "auto": client.get("/api/eta").json(),
+    }
+    for name in ("station", "auto"):
+        assert _same_shape(real[name], sample[name]), (name, _shape(real[name]), _shape(sample[name]))
+    for case in sample.values():
+        assert set(case) == ETA_KEYS

@@ -132,7 +132,7 @@ async function refresh() {
     const [r, s] = await Promise.all([fetch(etaUrl(target, speed)), fetch(stationsUrl(speed))]);
     if (r.status === 404 && target.mode === "station") { setTarget({ mode: "auto" }); return; }
     result = r.ok ? await r.json() : null;
-    stations = s.ok ? await s.json() : [];
+    stations = s.ok ? (await s.json()).stations : [];
     if (!r.ok) set("target", "ETA unavailable (HTTP " + r.status + ")");
   } catch (e) {
     set("target", "Server unreachable");

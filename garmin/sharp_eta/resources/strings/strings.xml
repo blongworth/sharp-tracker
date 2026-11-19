@@ -1,0 +1,5 @@
+<resources>
+    <string id="AppName">SHARP ETA</string>
+    <string id="ServerUrlTitle">Server URL (https://...)</string>
+    <string id="SpeedTitle">Planned speed, kn (0 = mean SOG)</string>
+</resources>

@@ -312,8 +312,11 @@ def eta(
 
 
 @app.get("/api/eta/stations")
-def eta_stations(speed_kn: float | None = Query(None, gt=0, le=50)) -> list[dict[str, Any]]:
-    """Every station with distance / time to go / ETA from the latest fix, nearest first."""
+def eta_stations(speed_kn: float | None = Query(None, gt=0, le=50)) -> dict[str, Any]:
+    """Every station with distance / time to go / ETA from the latest fix, nearest first.
+
+    Wrapped in {"stations": [...]}: Connect IQ's JSON parsing expects an object at the top.
+    """
     now = datetime.now(timezone.utc)
     stations = _stations()
     fix = latest_positions(1)
@@ -334,4 +337,4 @@ def eta_stations(speed_kn: float | None = Query(None, gt=0, le=50)) -> list[dict
         )
     if fix is not None:
         result.sort(key=lambda r: r["distance_nm"])
-    return result
+    return {"stations": result}

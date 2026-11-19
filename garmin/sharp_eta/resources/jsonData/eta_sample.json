@@ -1,0 +1,80 @@
+{
+  "station": {
+    "target": {
+      "mode": "station",
+      "station": "L5",
+      "name": "LTER5",
+      "lat": 40.5133,
+      "lon": -70.8833
+    },
+    "reason": null,
+    "distance_nm": 61.25,
+    "bearing_deg": 188.9,
+    "ttg_s": 22051,
+    "eta": "2026-11-19T19:29:16+00:00",
+    "eta_epoch": 1795116556,
+    "speed_kn": 10.0,
+    "speed_source": "sog_30min",
+    "fix_time": "2026-11-19T13:21:45+00:00",
+    "fix_epoch": 1795094505,
+    "fix_age_s": 7,
+    "stale": false
+  },
+  "auto": {
+    "target": {
+      "mode": "auto",
+      "station": "u1a",
+      "name": "upstream1a",
+      "lat": 41.1967,
+      "lon": -70.772083
+    },
+    "reason": null,
+    "distance_nm": 19.97,
+    "bearing_deg": 192.6,
+    "ttg_s": 7190,
+    "eta": "2026-11-19T15:21:35+00:00",
+    "eta_epoch": 1795101695,
+    "speed_kn": 10.0,
+    "speed_source": "sog_30min",
+    "fix_time": "2026-11-19T13:21:45+00:00",
+    "fix_epoch": 1795094505,
+    "fix_age_s": 7,
+    "stale": false
+  },
+  "nothing_ahead": {
+    "target": null,
+    "reason": "no station ahead",
+    "distance_nm": null,
+    "bearing_deg": null,
+    "ttg_s": null,
+    "eta": null,
+    "eta_epoch": null,
+    "speed_kn": 10.0,
+    "speed_source": "sog_30min",
+    "fix_time": "2026-11-19T13:21:45+00:00",
+    "fix_epoch": 1795094505,
+    "fix_age_s": 7,
+    "stale": false
+  },
+  "no_fix": {
+    "target": {
+      "mode": "station",
+      "station": "L5",
+      "name": "LTER5",
+      "lat": 40.5133,
+      "lon": -70.8833
+    },
+    "reason": null,
+    "distance_nm": null,
+    "bearing_deg": null,
+    "ttg_s": null,
+    "eta": null,
+    "eta_epoch": null,
+    "speed_kn": null,
+    "speed_source": "sog_30min",
+    "fix_time": null,
+    "fix_epoch": null,
+    "fix_age_s": null,
+    "stale": false
+  }
+}
