@@ -391,6 +391,10 @@ make sim        # run in the simulator against http://localhost:8090
 make release    # bin/sharp_eta_release.prg for the watch
 ```
 
+`make sim SERVER=http://localhost:8091` points the debug build at another
+port. If the watch shows "Needs https://", turn off **Settings → Use Device
+HTTPS Requirements** in the simulator to allow a plain-HTTP local server.
+
 **Install on the watch.**
 1. Copy `bin/sharp_eta_release.prg` to the watch's `GARMIN/APPS` folder over
    USB. On macOS, use Garmin Express or OpenMTP to see the watch's files.
