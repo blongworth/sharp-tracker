@@ -87,7 +87,7 @@ def test_waypoints_empty_when_remote_unreachable(client, monkeypatch):
 def test_waypoints_parsed_from_csv(client, monkeypatch):
     csv_text = (
         "stationfullname,station,startDate,endDate,decimalLatitude,decimalLongitude,depth_m\n"
-        "LTER2,L2,2018-01-01,current,41.03,-70.88,40.0\n"
+        "LTER2 ,L2  ,2018-01-01,current,41.03,-70.88,40.0\n"
         "LTER1,L1,2018-01-01,current,41.1967,-70.8833,NaN\n"
         "LTER1,L1old,2010-01-01,2017-12-31,41.0,-70.0,10\n"
         "LTER9,L9,2018-01-01,current,NaN,-70.0,10\n"
@@ -298,3 +298,12 @@ def test_eta_stations_nearest_first(client, stations):
     assert [r["station"] for r in rows] == ["L5", "L1", "L9"]
     assert set(rows[0]) == {"station", "name", "distance_nm", "ttg_s", "eta", "eta_epoch"}
     assert rows[0]["ttg_s"] == pytest.approx(2160, abs=5)
+
+
+def test_eta_page_and_script_served(client):
+    page = client.get("/eta")
+    assert page.status_code == 200 and "/eta.js" in page.text
+    script = client.get("/eta.js")
+    assert script.status_code == 200
+    assert script.headers["content-type"].startswith("text/javascript")
+    assert "/eta.js" in client.get("/").text

@@ -133,8 +133,10 @@ def load_waypoints() -> list[dict[str, Any]]:
             continue
         stations.append(
             {
-                "station": row["station"],
-                "name": row["stationfullname"],
+                # Strip: the source has IDs with trailing spaces ("MVCO  "),
+                # which break ?station= lookups.
+                "station": row["station"].strip(),
+                "name": row["stationfullname"].strip(),
                 "lat": lat,
                 "lon": lon,
                 "depth_m": _float_or_none(row.get("depth_m")),
@@ -182,6 +184,12 @@ def positions(
 @app.get("/eta")
 def eta_page() -> FileResponse:
     return FileResponse(LIVE_DIR / "eta.html")
+
+
+@app.get("/eta.js")
+def eta_script() -> FileResponse:
+    """Target storage and formatting shared by the map and the /eta page."""
+    return FileResponse(LIVE_DIR / "eta.js", media_type="text/javascript")
 
 
 def _stations() -> list[dict[str, Any]]:
