@@ -122,3 +122,55 @@ def test_pure_modules_only_import_circuitpython_modules(name):
 @pytest.mark.parametrize("name", ["code.py"])
 def test_hardware_modules_parse(name):
     ast.parse((FIRMWARE / name).read_text())
+
+
+# --- Deploy script --------------------------------------------------------------
+
+
+def _load_deploy():
+    import importlib.util
+
+    path = FIRMWARE.parents[1] / "scripts" / "deploy_pico.py"
+    spec = importlib.util.spec_from_file_location("deploy_pico", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _imports(path):
+    names = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Import):
+            names |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            names.add((node.module or "").split(".")[0])
+    return names
+
+
+def test_deploy_ships_every_local_module_and_library():
+    deploy = _load_deploy()
+    shipped = {name.removesuffix(".py") for _, name in deploy.FILES}
+    assert deploy.FILES[-1][1] == "code.py"  # written last (auto-reload)
+    imported = set().union(*(_imports(src) for src, _ in deploy.FILES))
+    local = {p.stem for p in FIRMWARE.glob("*.py")} | {"averaging"}
+    assert imported & local <= shipped
+    libs = {
+        line.strip()
+        for line in (FIRMWARE / "requirements.txt").read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    assert {name for name in imported if name.startswith("adafruit_")} <= libs
+
+
+def test_deploy_copies_files_and_keeps_settings(tmp_path):
+    deploy = _load_deploy()
+    (tmp_path / "boot_out.txt").write_text("Adafruit CircuitPython 9.2.1")
+    deploy.deploy(tmp_path, skip_libs=True)
+    for src, name in deploy.FILES:
+        assert (tmp_path / name).read_bytes() == src.read_bytes()
+    settings = tmp_path / "settings.toml"
+    assert settings.read_text() == deploy.SETTINGS_EXAMPLE.read_text()
+
+    settings.write_text('TRACKER_INGEST_TOKEN = "real"\n')
+    deploy.deploy(tmp_path, skip_libs=True)
+    assert settings.read_text() == 'TRACKER_INGEST_TOKEN = "real"\n'

@@ -190,18 +190,31 @@ see [`hardware/pico_enclosure/`](hardware/pico_enclosure/README.md).
 1. Flash the latest [CircuitPython UF2 for Raspberry Pi Pico W](https://circuitpython.org/board/raspberry_pi_pico_w/)
    by holding BOOTSEL while plugging in the Pico, then dragging the UF2 onto the
    `RPI-RP2` drive that appears. It reboots as a `CIRCUITPY` USB drive.
-2. From the [Adafruit CircuitPython Bundle](https://circuitpython.org/libraries)
-   matching your CircuitPython version, copy these into `CIRCUITPY/lib/`:
-   - `adafruit_requests.mpy`
-   - `adafruit_connection_manager.mpy`
-   - `adafruit_ntp.mpy`
-3. Copy `code.py`, `nmea_min.py`, and `fixes.py` from
-   `firmware/pico_nmea_tracker/`, plus `sharp_tracker/averaging.py` (shared with
-   the desktop collector), to the root of `CIRCUITPY`.
-4. Copy `firmware/pico_nmea_tracker/settings.toml.example` to `CIRCUITPY/settings.toml`
-   and fill in your WiFi credentials, `TRACKER_API_URL`, and `TRACKER_INGEST_TOKEN`
-   (the same ingest URL/token used by the desktop collector above). `settings.toml`
-   is gitignored — never commit your filled-in copy.
+2. With the board mounted as `CIRCUITPY`, run:
+
+   ```bash
+   uv run python scripts/deploy_pico.py      # or --path /Volumes/CIRCUITPY
+   ```
+
+   This uses [circup](https://github.com/adafruit/circup) (a dev dependency) to
+   install the libraries in `firmware/pico_nmea_tracker/requirements.txt` into
+   `CIRCUITPY/lib/`, choosing the builds that match the board's CircuitPython
+   version and adding their dependencies (`adafruit_connection_manager`). It then
+   copies `nmea_min.py`, `fixes.py`, `sharp_tracker/averaging.py` (shared with the
+   desktop collector), and `code.py` (last, because CircuitPython reloads on every
+   write), skipping files that haven't changed. Re-run it after any firmware change;
+   `--skip-libs` copies only the firmware files and works offline.
+3. On the first deploy the script creates `CIRCUITPY/settings.toml` from
+   `settings.toml.example`; fill in your WiFi credentials, `TRACKER_API_URL`, and
+   `TRACKER_INGEST_TOKEN` (the same ingest URL/token used by the desktop collector
+   above). Later deploys never overwrite it. `settings.toml` is gitignored — never
+   commit your filled-in copy.
+
+   Without the script: copy `adafruit_requests.mpy`, `adafruit_connection_manager.mpy`,
+   and `adafruit_ntp.mpy` from the matching
+   [Adafruit CircuitPython Bundle](https://circuitpython.org/libraries) into
+   `CIRCUITPY/lib/`, the four files above to the root of `CIRCUITPY`, and the
+   example settings to `CIRCUITPY/settings.toml`.
 
 ### Use
 
