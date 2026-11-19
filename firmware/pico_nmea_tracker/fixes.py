@@ -9,7 +9,7 @@ with the collector).
 Stick to syntax CircuitPython supports: no typing, dataclasses, or pathlib.
 """
 
-from nmea_min import parse_line
+from nmea_min import is_sentence, parse_line
 
 
 class FixFilter:
@@ -17,15 +17,21 @@ class FixFilter:
 
     process() returns a position dict (without received_at, which the caller
     stamps) or None. After each call, `gps_time` is that line's UTC fix time
-    (valid RMC) or None, for setting the clock.
+    (valid RMC) or None, for setting the clock, and `sentence_ok` says whether
+    the line was checksum-valid NMEA (with or without a fix), so the caller
+    can tell a GPS with no fix from garbled input.
     """
 
     def __init__(self):
         self.latest_nav = {}
         self.gps_time = None
+        self.sentence_ok = False
 
     def process(self, text):
         self.gps_time = None
+        self.sentence_ok = is_sentence(text)
+        if not self.sentence_ok:
+            return None
         nav, position = parse_line(text)
         if nav:
             for key, value in nav.items():

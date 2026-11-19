@@ -27,5 +27,9 @@ FLUSH_SECONDS = "5"
 MAX_BUFFER = "500"
 MIN_FREE_BYTES = "30000"
 
+# Console status line (GPS, network, clock, memory) every this many seconds;
+# 0 disables. The onboard LED shows the same state as a blink code (README).
+STATUS_SECONDS = "60"
+
 # Reboot if the main loop hangs this long (RP2040 max ~8.3 s); 0 disables.
 WATCHDOG_SECONDS = "8"

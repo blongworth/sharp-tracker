@@ -48,7 +48,9 @@ class World:
         self.server_up = True
         self.ntp_up = False
         self.mem_free = 100_000
-        self.gps = "fix"  # "fix", "no_fix" (talking, quality 0/status V), or "silent"
+        # "fix", "no_fix" (talking, quality 0/status V), "garbled" (wrong baud), or "silent"
+        self.gps = "fix"
+        self.led: list[bool] = []  # every LED write
         self.posts: list[list[dict]] = []
         self.attempts = 0
         self.hooks: dict[int, callable] = {}
@@ -80,6 +82,8 @@ class World:
         self.t += 1
         if self.gps == "silent":
             return b""
+        if self.gps == "garbled":
+            return bytes(range(0x80, 0xC0))  # no '$', no line ends
         return nmea_gen.sentences(second, self.rmc, valid=self.gps == "fix")
 
 
@@ -97,12 +101,31 @@ def install_stubs(monkeypatch, world: World):
         localtime=world.localtime,
         struct_time=real_time.struct_time,
     )
-    module("board", GP0="GP0", GP1="GP1")
+    module("board", GP0="GP0", GP1="GP1", LED="LED")
+
+    class Led:
+        direction = None
+
+        @property
+        def value(self):
+            return world.led[-1] if world.led else False
+
+        @value.setter
+        def value(self, on):
+            world.led.append(on)
+
+    module(
+        "digitalio",
+        DigitalInOut=lambda pin: Led(),
+        Direction=types.SimpleNamespace(OUTPUT="OUTPUT"),
+    )
     module("gc", collect=lambda: None, mem_free=lambda: world.mem_free)
     # code.py imports the shared module copied to the board from sharp_tracker/.
     monkeypatch.setitem(sys.modules, "averaging", averaging)
 
     class Uart:
+        in_waiting = 256  # the fake clock advances per read, so always read
+
         def __init__(self, *a, **k):
             pass
 
@@ -333,3 +356,53 @@ def test_window_closes_on_time_when_gps_stops(run_firmware, gps):
     assert "n=30 " in fixes[1]["raw"]
     # ...at the window's end, not whenever a valid fix next appears.
     assert fixes[1]["received_at"] == "2026-11-15T12:02:00+00:00"
+
+
+def status_lines(capsys) -> list[str]:
+    return [line for line in capsys.readouterr().out.splitlines() if line.startswith("Status:")]
+
+
+@pytest.mark.parametrize(
+    ("gps", "expected"),
+    [
+        ("fix", "gps=ok "),
+        ("no_fix", "gps=no_fix "),
+        ("garbled", "gps=garbled "),
+        ("silent", "gps=no_data "),
+    ],
+)
+def test_status_line_reports_gps_state(run_firmware, capsys, gps, expected):
+    world = World(seconds=125)
+    world.ntp_up = True  # clock set without a GPS fix, so only the GPS state varies
+    world.gps = gps
+    run_firmware(world, STATUS_SECONDS="60")
+    lines = status_lines(capsys)
+    assert len(lines) == 2  # at 60 s and 120 s
+    assert all(expected in line for line in lines), lines
+    assert "clock=ntp" in lines[-1]
+    if gps == "no_fix":
+        assert "last=$GPRMC," in lines[-1]
+    # Healthy: the LED blinks a heartbeat; otherwise it still changes state.
+    assert True in world.led and False in world.led
+
+
+def test_status_line_reports_failing_sends(run_firmware, capsys):
+    world = World(seconds=125)
+    world.hooks[30] = lambda w: setattr(w, "server_up", False)
+    run_firmware(world, STATUS_SECONDS="60")
+    last = status_lines(capsys)[-1]
+    assert "gps=ok " in last and "send=failing" in last and "clock=gps" in last
+    assert "queued=0" not in last
+
+
+def test_status_line_disabled(run_firmware, capsys):
+    run_firmware(World(seconds=125), STATUS_SECONDS="0")
+    assert status_lines(capsys) == []
+
+
+def test_fatal_error_flickers_then_reboots(run_firmware):
+    world = World(seconds=60)
+    with pytest.raises(Rebooted):
+        run_firmware(world, TRACKER_API_URL="")
+    assert world.led[0] is True  # solid on while booting
+    assert len(world.led) > 20  # flickered for the 5 s before reset

@@ -242,6 +242,44 @@ it connect, set its clock, and log each fix.
   disables), the board reboots. Any other unexpected error also reboots after
   5 s.
 
+#### Status line
+
+Every `STATUS_SECONDS` (default 60; 0 disables) the console prints one line
+covering the interval since the last one:
+
+```
+Status: gps=ok lines=120 fixes=120 | wifi=up send=ok queued=0 | clock=gps | mem=81234
+Status: gps=no_fix lines=118 fixes=0 bytes=8512 last=$GPRMC,120000.00,V,,,,,,,151126,,,N*4E | wifi=up send=- queued=0 | clock=ntp | mem=80112
+```
+
+`gps=` reflects the last 10 s of input. If it isn't `ok`, the line also shows the
+bytes received and the last line from the GPS.
+
+| `gps=` | Meaning | Check |
+| --- | --- | --- |
+| `ok` | Position fixes arriving | |
+| `no_fix` | Valid NMEA, but no fix (RMC status `V`, GGA quality 0) | Antenna sky view; give a cold GPS a few minutes |
+| `garbled` | Bytes arriving, but no valid NMEA sentences | `NMEA_SERIAL_BAUD`; signal inverted (RS-232 straight into GP1) |
+| `no_data` | Nothing on GP1 | GPS TX → GP1, common ground, GPS power |
+
+`send=` is `ok`, `failing` (the last send failed; fixes queue in RAM, see
+`queued=`), or `-` (nothing sent yet). `clock=` is `ntp`, `gps`, or `unset`
+(nothing is logged until it's set).
+
+#### LED
+
+The onboard LED (only visible with the lid off) shows the most severe problem:
+
+| LED | Meaning |
+| --- | --- |
+| Solid on | Booting: connecting to WiFi / NTP |
+| 1 short blink every 3 s | All OK |
+| 2 blinks every 3 s | Network: WiFi down or sends failing (fixes queue in RAM) |
+| 3 blinks every 3 s | GPS talking but no usable fix (no fix, or no date yet to set the clock) |
+| 4 blinks every 3 s | No GPS data, or garbled (wiring or baud rate) |
+| Fast flicker | Fatal error; rebooting in 5 s |
+| Stuck on or off | Blocked in a network call (up to ~5 s) or hung; the watchdog reboots it |
+
 ### Bench test on hardware
 
 1. On a laptop on the same WiFi: `TRACKER_INGEST_TOKEN=test-token uv run

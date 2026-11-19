@@ -16,6 +16,7 @@ import time
 
 import board
 import busio
+import digitalio
 import microcontroller
 import rtc
 import socketpool
@@ -28,6 +29,7 @@ import adafruit_requests
 
 from averaging import Averager, epoch_from_parts
 from fixes import FixBuffer, FixFilter, fix_time_parts, iso_utc, weekday
+from status import LED_FLICKER, Health, led_on
 
 UART_TX = board.GP0
 UART_RX = board.GP1
@@ -46,7 +48,11 @@ MIN_FREE_BYTES = int(os.getenv("MIN_FREE_BYTES", "30000"))
 SEND_BATCHES_PER_FLUSH = int(os.getenv("SEND_BATCHES_PER_FLUSH", "3"))
 # RP2040 maximum is about 8.3 s. 0 disables (handy while debugging over USB).
 WATCHDOG_SECONDS = float(os.getenv("WATCHDOG_SECONDS", "8"))
+# Console status line interval (seconds); 0 disables.
+STATUS_SECONDS = float(os.getenv("STATUS_SECONDS", "60"))
 HTTP_TIMEOUT_SECONDS = 5
+# Longest a UART read waits for data, so the loop (and the LED) runs at ~20 Hz.
+UART_POLL_SECONDS = 0.05
 WIFI_CONNECT_TIMEOUT_SECONDS = 5  # below the watchdog timeout
 WIFI_RETRY_SECONDS = 30
 MAX_RETRY_SECONDS = 60
@@ -56,6 +62,25 @@ WIFI_SSID = os.getenv("CIRCUITPY_WIFI_SSID")
 WIFI_PASSWORD = os.getenv("CIRCUITPY_WIFI_PASSWORD")
 INGEST_URL = os.getenv("TRACKER_API_URL")
 INGEST_TOKEN = os.getenv("TRACKER_INGEST_TOKEN")
+
+
+health = Health()
+
+_led_pin = getattr(board, "LED", None)
+if _led_pin is not None:
+    led = digitalio.DigitalInOut(_led_pin)
+    led.direction = digitalio.Direction.OUTPUT
+else:
+    led = None
+_led_state = None
+
+
+def set_led(on):
+    """Write the LED only on change: on a Pico W each write goes to the WiFi chip."""
+    global _led_state
+    if led is not None and on != _led_state:
+        led.value = on
+        _led_state = on
 
 
 def feed_watchdog():
@@ -97,6 +122,7 @@ def sync_clock_ntp(pool):
     """Best effort: a ship often has no NTP; GPS time (RMC) takes over then."""
     try:
         rtc.RTC().datetime = adafruit_ntp.NTP(pool, tz_offset=0).datetime
+        health.clock_source = "ntp"
         print("Clock set from NTP:", iso_utc_now())
         return True
     except Exception as exc:
@@ -201,26 +227,36 @@ def run():
         clock_synced_at = time.monotonic()
 
     # A larger receive buffer (several seconds of NMEA) rides out slow sends.
-    uart = busio.UART(UART_TX, UART_RX, baudrate=BAUD, timeout=1, receiver_buffer_size=2048)
+    uart = busio.UART(UART_TX, UART_RX, baudrate=BAUD, timeout=UART_POLL_SECONDS, receiver_buffer_size=2048)
     fixes = FixFilter()
     averager = Averager(AVERAGE_SECONDS) if AVERAGE_SECONDS > 0 else None
     pending = FixBuffer(MAX_BUFFER, MIN_FREE_BYTES)
     next_flush = time.monotonic() + FLUSH_SECONDS
     retry_seconds = FLUSH_SECONDS
     line_buf = b""
+    next_status = time.monotonic() + STATUS_SECONDS
+    wifi_up = wifi.radio.connected
+    next_wifi_check = 0
 
     start_watchdog()
     while True:
         feed_watchdog()
-        data = uart.read(256)
+        # Take what's waiting without blocking; with nothing waiting, read(1)
+        # waits at most UART_POLL_SECONDS, which paces the loop.
+        data = uart.read(min(uart.in_waiting, 256) or 1)
         if data:
+            health.on_bytes(time.monotonic(), len(data))
             line_buf += data
+            if len(line_buf) > 1024 and b"\n" not in line_buf:
+                line_buf = line_buf[-256:]  # garbled input with no line ends
             while b"\n" in line_buf:
                 raw_line, _, line_buf = line_buf.partition(b"\n")
+                text = raw_line.decode("ascii", "ignore")
                 try:
-                    position = fixes.process(raw_line.decode("ascii", "ignore"))
+                    position = fixes.process(text)
                 except Exception:
-                    continue
+                    position = None
+                health.on_line(time.monotonic(), text, fixes.sentence_ok, position)
 
                 # GPS time is authoritative UTC: set (and hourly re-set) the RTC from
                 # any valid RMC.
@@ -231,6 +267,7 @@ def run():
                     if parts:
                         set_clock(parts)
                         clock_synced_at = time.monotonic()
+                        health.clock_source = "gps"
                         print("Clock set from GPS:", iso_utc_now())
                 if position is None or not clock_is_set():
                     continue  # no clock yet: received_at would be 2000-01-01
@@ -253,16 +290,29 @@ def run():
         # A full batch flushes early only while sends succeed; otherwise honor the backoff.
         if len(pending) and (now >= next_flush or (link_ok and len(pending) >= BATCH_SIZE)):
             ok = flush(session, pending)
+            health.on_send(ok)
             # Back off while sends fail so a dead link doesn't stall UART reads every flush.
             retry_seconds = FLUSH_SECONDS if ok else min(retry_seconds * 2, MAX_RETRY_SECONDS)
             next_flush = now + retry_seconds
 
+        if now >= next_wifi_check:  # a query to the WiFi chip; once a second is plenty
+            wifi_up = wifi.radio.connected
+            next_wifi_check = now + 1
+        if STATUS_SECONDS and now >= next_status:
+            print(health.status_line(now, wifi_up, len(pending), free_memory()))
+            next_status = now + STATUS_SECONDS
+        set_led(led_on(health.led_code(now, wifi_up), now))
 
+
+set_led(True)  # solid on while booting (WiFi, NTP), until the main loop runs
 try:
     run()
 except Exception as exc:
     # Unexpected error (WiFi outages are handled in the loop). Reboot cleanly
     # rather than retry in place. Unsent fixes in RAM are lost.
     print("Fatal error, rebooting in 5 s:", exc)
-    time.sleep(5)
+    flicker_until = time.monotonic() + 5  # under the 8 s watchdog
+    while time.monotonic() < flicker_until:
+        set_led(led_on(LED_FLICKER, time.monotonic()))
+        time.sleep(0.02)
     microcontroller.reset()

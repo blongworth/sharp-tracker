@@ -30,6 +30,7 @@ SETTINGS_EXAMPLE = FIRMWARE / "settings.toml.example"
 FILES = [
     (FIRMWARE / "nmea_min.py", "nmea_min.py"),
     (FIRMWARE / "fixes.py", "fixes.py"),
+    (FIRMWARE / "status.py", "status.py"),
     (ROOT / "sharp_tracker" / "averaging.py", "averaging.py"),
     (FIRMWARE / "code.py", "code.py"),
 ]
@@ -61,11 +62,20 @@ def install_libs(drive: Path) -> None:
     subprocess.run(cmd, check=True)
 
 
+def flush_to_board() -> None:
+    """Push the OS write cache to the board now (macOS writes FAT drives lazily)."""
+    if hasattr(os, "sync"):
+        os.sync()
+
+
 def copy_if_changed(src: Path, dest: Path) -> bool:
     data = src.read_bytes()
     if dest.exists() and dest.read_bytes() == data:
         return False
     dest.write_bytes(data)  # plain write: FAT has no useful metadata to copy
+    # CircuitPython restarts code.py on every write and reads the flash directly,
+    # so each module must be on the board before the code.py write restarts it.
+    flush_to_board()
     return True
 
 
@@ -81,8 +91,16 @@ def deploy(drive: Path, skip_libs: bool = False) -> None:
     else:
         shutil.copyfile(SETTINGS_EXAMPLE, settings)
         print(f"created settings.toml from the example: edit {settings} before use")
-    if hasattr(os, "sync"):
-        os.sync()  # flush before someone unplugs the board
+    flush_to_board()
+    # A path lookup can succeed from the OS cache while the directory entry
+    # never reached the board; the listing is what the board will see.
+    listed = set(os.listdir(drive))
+    missing = [name for _, name in FILES if name not in listed]
+    if missing:
+        sys.exit(
+            f"Not on the board after copying: {', '.join(missing)}. Eject the drive, "
+            "replug the Pico, and run this again."
+        )
 
 
 def main() -> None:

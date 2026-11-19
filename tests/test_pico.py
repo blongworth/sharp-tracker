@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from fixes import FixBuffer, FixFilter, fix_time_parts, iso_utc, weekday
+from status import LED_FLICKER, LED_NETWORK, LED_NO_FIX, LED_NO_GPS, LED_OK, Health, led_code, led_on
 
 FIRMWARE = Path(__file__).resolve().parents[1] / "firmware" / "pico_nmea_tracker"
 
@@ -100,9 +101,94 @@ def test_buffer_never_drops_the_only_fix():
     assert len(buf) == 1
 
 
+def test_fix_filter_flags_valid_sentences(sample_lines):
+    ff = FixFilter()
+    ff.process(sample_lines[0])
+    assert ff.sentence_ok
+    ff.process("$GPRMC,120000.00,V,,,,,,,151126,,,N*00")  # bad checksum
+    assert not ff.sentence_ok
+    ff.process("\x8f\xffjunk")
+    assert not ff.sentence_ok
+
+
+# --- status.py --------------------------------------------------------------------
+
+GOOD = "$GPRMC,...,A,..."  # Health only sees the flags code.py passes
+
+
+def test_gps_state_from_newest_evidence():
+    h = Health()
+    assert h.gps_state(0) == "no_data"
+    h.on_bytes(0, 10)
+    assert h.gps_state(0) == "garbled"
+    h.on_line(0, "$GPRMC,...,V", True, None)
+    assert h.gps_state(0) == "no_fix"
+    h.on_line(0, GOOD, True, {"latitude": 41.5})
+    assert h.gps_state(0) == "ok"
+    # Each kind of evidence goes stale after GPS_STALE_SECONDS.
+    h.on_line(8, "$GPRMC,...,V", True, None)
+    h.on_bytes(15, 5)
+    assert h.gps_state(11) == "no_fix"
+    assert h.gps_state(19) == "garbled"
+    assert h.gps_state(26) == "no_data"
+
+
+def test_status_line_reports_and_resets_counts():
+    h = Health()
+    h.clock_source = "gps"
+    h.on_bytes(0, 200)
+    h.on_line(0, GOOD, True, {"latitude": 41.5})
+    h.on_line(1, GOOD, True, {"latitude": 41.5})
+    h.on_send(True)
+    line = h.status_line(1, True, 3, 81234)
+    assert line == (
+        "Status: gps=ok lines=2 fixes=2 | wifi=up send=ok queued=3 | clock=gps | mem=81234"
+    )
+    h.on_bytes(20, 70)  # the last fix (t=1) is stale by now
+    h.on_line(20, "$GPRMC,120000.00,V,,,,,,,151126,,,N*4E\r", True, None)
+    h.on_send(False)
+    line = h.status_line(20, False, 4, None)
+    assert line.startswith("Status: gps=no_fix lines=1 fixes=0 bytes=70 last=$GPRMC,120000.00,V,")
+    assert line.endswith("| wifi=down send=failing queued=4 | clock=gps | mem=-")
+    assert "\r" not in line
+
+
+def test_status_line_shows_garbled_bytes_printably():
+    h = Health()
+    h.on_bytes(0, 64)
+    h.on_line(0, "\x01\x7f" + "x" * 100, False, None)
+    line = h.status_line(0, True, 0, 1000)
+    assert "gps=garbled" in line and "send=-" in line and "clock=unset" in line
+    assert "last=??" + "x" * 58 + " |" in line
+
+
+def test_led_code_priority():
+    assert led_code("ok", True, True, True) == LED_OK
+    assert led_code("ok", True, None, True) == LED_OK  # nothing sent yet
+    assert led_code("ok", False, True, True) == LED_NETWORK
+    assert led_code("ok", True, False, True) == LED_NETWORK
+    assert led_code("ok", True, True, False) == LED_NO_FIX  # fix but no date for the clock
+    assert led_code("no_fix", False, False, True) == LED_NO_FIX
+    assert led_code("garbled", False, False, False) == LED_NO_GPS
+    assert led_code("no_data", True, True, True) == LED_NO_GPS
+
+
+@pytest.mark.parametrize("code", [LED_OK, LED_NETWORK, LED_NO_FIX, LED_NO_GPS])
+def test_led_blinks_code_times_per_frame(code):
+    frame = [led_on(code, 6 + i / 100) for i in range(300)]  # one 3 s frame, 10 ms steps
+    rising = sum(1 for prev, cur in zip([False] + frame, frame) if cur and not prev)
+    assert rising == code
+    assert not frame[-1]  # dark gap before the next frame
+
+
+def test_led_flicker_is_fast():
+    states = [led_on(LED_FLICKER, i / 100) for i in range(100)]
+    assert sum(1 for a, b in zip(states, states[1:]) if a != b) >= 15
+
+
 # --- CircuitPython compatibility guard ------------------------------------------
 
-PURE_MODULES = ["nmea_min.py", "fixes.py"]
+PURE_MODULES = ["nmea_min.py", "fixes.py", "status.py"]
 CIRCUITPYTHON_OK_IMPORTS = {"nmea_min"}
 
 
@@ -174,3 +260,13 @@ def test_deploy_copies_files_and_keeps_settings(tmp_path):
     settings.write_text('TRACKER_INGEST_TOKEN = "real"\n')
     deploy.deploy(tmp_path, skip_libs=True)
     assert settings.read_text() == 'TRACKER_INGEST_TOKEN = "real"\n'
+
+
+def test_deploy_fails_when_a_file_is_not_listed(tmp_path, monkeypatch):
+    deploy = _load_deploy()
+    real_listdir = deploy.os.listdir
+    monkeypatch.setattr(
+        deploy.os, "listdir", lambda p: [n for n in real_listdir(p) if n != "status.py"]
+    )
+    with pytest.raises(SystemExit, match="status.py"):
+        deploy.deploy(tmp_path, skip_libs=True)

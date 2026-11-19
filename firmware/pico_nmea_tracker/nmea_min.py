@@ -14,7 +14,7 @@ def parse_line(line):
     received_at, which the caller stamps with the current wall-clock time.
     """
     raw = line.strip()
-    if not raw.startswith("$") or "*" not in raw or not _checksum_ok(raw):
+    if not is_sentence(raw):
         return None, None
 
     fields = raw[1:].split("*")[0].split(",")
@@ -39,6 +39,12 @@ def parse_line(line):
     except (IndexError, ValueError):
         return None, None
     return None, None
+
+
+def is_sentence(line):
+    """True for a well-formed NMEA sentence with a valid checksum, fix or not."""
+    raw = line.strip()
+    return raw.startswith("$") and "*" in raw and _checksum_ok(raw)
 
 
 def _checksum_ok(sentence):
