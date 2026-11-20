@@ -198,7 +198,7 @@ ETA_STATIONS = [
 ]
 ETA_KEYS = {
     "target", "reason", "distance_nm", "bearing_deg", "ttg_s", "eta", "eta_epoch",
-    "speed_kn", "speed_source", "fix_time", "fix_epoch", "fix_age_s", "stale",
+    "vmg_kn", "speed_kn", "speed_source", "fix_time", "fix_epoch", "fix_age_s", "stale",
 }
 
 
@@ -234,6 +234,13 @@ def test_eta_to_station_from_mean_sog(client, stations):
     assert r["eta_epoch"] == r["fix_epoch"] + r["ttg_s"]
     assert r["eta"] == datetime.fromtimestamp(r["eta_epoch"], timezone.utc).isoformat()
     assert r["stale"] is False and 25 <= r["fix_age_s"] <= 60
+    assert r["vmg_kn"] == pytest.approx(10.0)  # heading straight at it
+
+
+@pytest.mark.parametrize(("cog", "expected"), [(240.0, 5.0), (0.0, -10.0)])  # 60 deg off; away
+def test_eta_vmg_off_course(client, stations, cog, expected):
+    steaming_south(client, cog=cog)
+    assert client.get("/api/eta?station=L5").json()["vmg_kn"] == pytest.approx(expected, abs=0.01)
 
 
 def test_eta_planned_speed_overrides_sog(client, stations, monkeypatch):

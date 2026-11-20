@@ -38,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router as ingest_router
 from .db import get_engine, latest_positions, track_positions
-from .eta import bearing_deg, distance_nm, mean_sog, predict_next, time_to_go
+from .eta import bearing_deg, distance_nm, mean_sog, predict_next, time_to_go, vmg
 
 LOG = logging.getLogger(__name__)
 
@@ -275,6 +275,7 @@ def eta(
     now = datetime.now(timezone.utc)
     rows = latest_positions(2)
     fix = rows[0] if rows else None
+    heading = _heading(fix, rows[1] if len(rows) > 1 else None) if fix else None
     reason = None
 
     if lat is not None:
@@ -290,21 +291,26 @@ def eta(
         elif fix is None:
             target, reason = None, "no position yet"
         else:
-            heading = _heading(fix, rows[1] if len(rows) > 1 else None)
             match = predict_next(fix["latitude"], fix["longitude"], heading, stations)
             target = {"mode": "auto", **_target(match)} if match else None
             if target is None:
                 reason = "no course yet" if heading is None else "no station ahead"
 
     speed, source = _speed(speed_kn, now)
+    made_good = None
     if target:
         fields = _eta_fields(fix, target["lat"], target["lon"], speed)
+        if fix is not None:
+            made_good = vmg(fix.get("speed_knots"), heading, fields["bearing_deg"])
     else:
         fields = _eta_fields(None, 0.0, 0.0, speed)
     return {
         "target": target,
         "reason": reason,
         **fields,
+        # Speed made good toward the target at the fix: clients dead-reckon
+        # the distance between fixes with it.
+        "vmg_kn": round(made_good, 2) if made_good is not None else None,
         "speed_kn": round(speed, 2) if speed is not None else None,
         "speed_source": source,
         **_fix_fields(fix, now),

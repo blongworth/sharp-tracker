@@ -9,6 +9,7 @@ from sharp_tracker.eta import (
     mean_sog,
     predict_next,
     time_to_go,
+    vmg,
 )
 
 # A station grid around 41 N, 70.88 W (the NES-LTER L-line runs due south).
@@ -81,3 +82,13 @@ def test_time_to_go():
     assert time_to_go(10.0, 0.3) is None  # stopped
     assert time_to_go(10.0, None) is None
     assert time_to_go(None, 10.0) is None
+
+
+def test_vmg():
+    assert vmg(10.0, 180.0, 180.0) == pytest.approx(10.0)
+    assert vmg(10.0, 240.0, 180.0) == pytest.approx(5.0)  # 60 deg off
+    assert vmg(10.0, 90.0, 180.0) == pytest.approx(0.0, abs=1e-9)  # abeam
+    assert vmg(10.0, 0.0, 180.0) == pytest.approx(-10.0)  # moving away
+    assert vmg(10.0, 350.0, 10.0) == pytest.approx(10.0 * 0.9396926)  # wraps through north
+    assert vmg(None, 180.0, 180.0) is None
+    assert vmg(10.0, None, 180.0) is None

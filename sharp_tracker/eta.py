@@ -68,6 +68,13 @@ def mean_sog(positions: Iterable[dict[str, Any]]) -> float | None:
     return sum(speeds) / len(speeds) if speeds else None
 
 
+def vmg(sog: float | None, cog: float | None, bearing: float) -> float | None:
+    """Velocity made good toward `bearing` (knots, negative when moving away)."""
+    if sog is None or cog is None:
+        return None
+    return sog * math.cos(math.radians(angle_between(cog, bearing)))
+
+
 def time_to_go(distance: float | None, speed_kn: float | None) -> int | None:
     """Seconds to cover `distance` nm at `speed_kn`; None when stopped or unknown."""
     if distance is None or speed_kn is None or speed_kn < MIN_SPEED_KN:
