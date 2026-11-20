@@ -108,6 +108,25 @@ function estimatesTtgFromVmg(logger as Test.Logger) as Boolean {
 }
 
 (:test)
+function timesFetchesToFixes(logger as Test.Logger) as Boolean {
+    // Next fix expected at t=1000: fetch 8 s after it.
+    Test.assertEqual(EtaModel.fetchDelay(1000, 960), 48);
+    // 10 s averaging: the next fix is 10 s after the last, so about every 10 s.
+    Test.assertEqual(EtaModel.fetchDelay(1000, 998), 10);
+    // Due or late: retry soon...
+    Test.assertEqual(EtaModel.fetchDelay(1000, 1008), 10);
+    Test.assertEqual(EtaModel.fetchDelay(1000, 1060), 10);
+    // ...but a source quiet for over a minute is polled every 60 s.
+    Test.assertEqual(EtaModel.fetchDelay(1000, 1069), 60);
+    // Far off (long averaging, odd data): capped at 120 s.
+    Test.assertEqual(EtaModel.fetchDelay(5000, 1000), 120);
+    // Cadence unknown (older server, fewer than two fixes): every 60 s.
+    Test.assertEqual(EtaModel.fetchDelay(null, 1000), 60);
+    Test.assertEqual(EtaModel.parseEta(sample("station"))["nextFixEpoch"], 1795094565);
+    return true;
+}
+
+(:test)
 function formatsDistance(logger as Test.Logger) as Boolean {
     Test.assertEqual(EtaModel.formatDistance(6.04), "6.0 nm");
     Test.assertEqual(EtaModel.formatDistance(6), "6.0 nm");

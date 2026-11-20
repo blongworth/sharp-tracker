@@ -202,7 +202,10 @@ unknown:
   fixes the map, the `/eta` page and the watch dead-reckon with it: the
   distance shrinks at the VMG, and TTG is that distance at the speed basis;
 - `speed_kn` and `speed_source` (`sog_30min` or `planned`);
-- `fix_time`, `fix_epoch`, `fix_age_s` and `stale`.
+- `fix_time`, `fix_epoch`, `fix_age_s` and `stale`;
+- `next_fix_epoch`: when the source should send its next fix (newest
+  `received_at` plus the median gap between recent fixes), so clients can
+  poll just after it arrives.
 
 ## Pico W firmware (CircuitPython NMEA bridge)
 
@@ -383,8 +386,12 @@ phone, which fetches `/api/eta`. So:
   server may be refused, especially on iOS ("Needs https://" on the watch).
 
 The glance never fetches. It shows the last data the widget fetched, counted
-down, and dims it when the fix is more than 5 min old. Refresh happens every
-60 s while the widget is open.
+down, and dims it when the fix is more than 5 min old. While the widget is
+open it fetches about 8 s after each new fix should reach the server
+(`next_fix_epoch`): every 10 s with `AVERAGE_SECONDS=10`, every 60 s with the
+default. It never fetches more often than every 10 s or less often than every
+2 min, retries every 10 s for a minute when a fix is late, then drops to every
+60 s while the source is quiet, and never sends overlapping requests.
 
 **Build and test.** You need the Connect IQ SDK and the `fr165` device files,
 installed with Garmin's SDK Manager (Garmin account required):

@@ -11,6 +11,15 @@ module EtaModel {
     // Data older than this (seconds since the fix) is shown dimmed.
     const STALE_SECONDS = 300;
 
+    // Fetch timing (seconds). The main view fetches ARRIVAL_MARGIN_S after the
+    // server expects the next fix (next_fix_epoch), so each fetch picks up a new
+    // fix: every 10 s with 10 s averaging, every 60 s with the default 60 s.
+    const ARRIVAL_MARGIN_S = 8;   // fix reaches the server: batching + network
+    const FETCH_MIN_S = 10;       // never more often than this
+    const FETCH_MAX_S = 120;      // never less often (target or server changes)
+    const FETCH_DEFAULT_S = 60;   // cadence unknown, or the source has gone quiet
+    const FETCH_ERROR_S = 30;     // after a failed request
+
     // A /api/eta response -> a flat model Dictionary, or a String error.
     // Keeps only what the watch shows, so the cached copy in Storage stays small.
     function parseEta(data) {
@@ -34,6 +43,7 @@ module EtaModel {
         putIfSet(model, "distanceNm", data["distance_nm"]);
         putIfSet(model, "speedKn", data["speed_kn"]);
         putIfSet(model, "vmgKn", data["vmg_kn"]);
+        putIfSet(model, "nextFixEpoch", data["next_fix_epoch"]);
         return model;
     }
 
@@ -49,6 +59,24 @@ module EtaModel {
             return null;
         }
         return etaEpoch - nowEpoch;
+    }
+
+    // Seconds until the next fetch, given when the server expects the next fix.
+    // A fix that is late is retried every FETCH_MIN_S for up to FETCH_DEFAULT_S,
+    // then the source is treated as quiet (ship out of contact, GPS off) and
+    // polled every FETCH_DEFAULT_S.
+    function fetchDelay(nextFixEpoch, nowEpoch) {
+        if (nextFixEpoch == null) {
+            return FETCH_DEFAULT_S;
+        }
+        var delay = nextFixEpoch + ARRIVAL_MARGIN_S - nowEpoch;
+        if (delay < -FETCH_DEFAULT_S) {
+            return FETCH_DEFAULT_S;
+        }
+        if (delay < FETCH_MIN_S) {
+            return FETCH_MIN_S;
+        }
+        return delay > FETCH_MAX_S ? FETCH_MAX_S : delay;
     }
 
     // Distance to go now, dead-reckoned from the fix: the ship closes on the

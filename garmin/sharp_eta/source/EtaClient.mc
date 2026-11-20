@@ -42,6 +42,8 @@ function logResponse(what, code) {
 class EtaClient {
 
     private var _onDone;  // Method() called after every fetch, success or not
+    private var _busy = false;     // an /api/eta request is outstanding
+    private var _pending = false;  // another fetch was asked for meanwhile
 
     function initialize(onDone) {
         _onDone = onDone;
@@ -72,13 +74,21 @@ class EtaClient {
         return p;
     }
 
+    // One /api/eta request at a time: overlapping requests over a slow phone
+    // link fail (BLE queue full). A fetch asked for while one is outstanding
+    // (e.g. a new target from the menu) runs when it finishes.
     function fetchEta() {
+        if (_busy) {
+            _pending = true;
+            return;
+        }
         var base = serverUrl();
         if (base.equals("")) {
             Application.Storage.setValue(KEY_ERROR, "Set server URL in Garmin Connect");
             _onDone.invoke();
             return;
         }
+        _busy = true;
         Communications.makeWebRequest(base + "/api/eta", params(), jsonOptions(), method(:onEta));
     }
 
@@ -109,6 +119,12 @@ class EtaClient {
             Application.Storage.deleteValue(KEY_STATION);
         }
         storeOrClear(KEY_ERROR, error);
+        _busy = false;
+        if (_pending) {
+            _pending = false;
+            fetchEta();
+            return;  // _onDone runs when that one finishes
+        }
         _onDone.invoke();
     }
 

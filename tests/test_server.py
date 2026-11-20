@@ -199,6 +199,7 @@ ETA_STATIONS = [
 ETA_KEYS = {
     "target", "reason", "distance_nm", "bearing_deg", "ttg_s", "eta", "eta_epoch",
     "vmg_kn", "speed_kn", "speed_source", "fix_time", "fix_epoch", "fix_age_s", "stale",
+    "next_fix_epoch",
 }
 
 
@@ -235,6 +236,7 @@ def test_eta_to_station_from_mean_sog(client, stations):
     assert r["eta"] == datetime.fromtimestamp(r["eta_epoch"], timezone.utc).isoformat()
     assert r["stale"] is False and 25 <= r["fix_age_s"] <= 60
     assert r["vmg_kn"] == pytest.approx(10.0)  # heading straight at it
+    assert r["next_fix_epoch"] == r["fix_epoch"] + 60  # fixes a minute apart
 
 
 @pytest.mark.parametrize(("cog", "expected"), [(240.0, 5.0), (0.0, -10.0)])  # 60 deg off; away
@@ -295,6 +297,7 @@ def test_eta_without_fixes(client, stations):
     assert set(r) == ETA_KEYS
     assert r["target"]["station"] == "L5"
     assert r["distance_nm"] is None and r["ttg_s"] is None and r["fix_time"] is None
+    assert r["next_fix_epoch"] is None
     assert r["stale"] is False
     auto = client.get("/api/eta").json()
     assert (auto["target"], auto["reason"]) == (None, "no position yet")

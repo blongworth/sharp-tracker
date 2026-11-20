@@ -7,6 +7,7 @@ knots, angles degrees true (0 = north, clockwise), times seconds.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 EARTH_RADIUS_NM = 3440.065
@@ -73,6 +74,19 @@ def vmg(sog: float | None, cog: float | None, bearing: float) -> float | None:
     if sog is None or cog is None:
         return None
     return sog * math.cos(math.radians(angle_between(cog, bearing)))
+
+
+def next_fix_time(received: list[datetime]) -> datetime | None:
+    """When the source should produce its next fix, from recent received_at times (newest first).
+
+    received_at is stamped when each averaging window closes, so the gaps are
+    regular: the next fix is the newest plus the median gap (the median skips a
+    one-off outage). None with fewer than two fixes.
+    """
+    gaps = sorted((a - b).total_seconds() for a, b in zip(received, received[1:]) if a > b)
+    if not gaps:
+        return None
+    return received[0] + timedelta(seconds=gaps[len(gaps) // 2])
 
 
 def time_to_go(distance: float | None, speed_kn: float | None) -> int | None:

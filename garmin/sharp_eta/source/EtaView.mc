@@ -1,8 +1,8 @@
 // Main widget view: target name, a large time to go re-estimated every
 // second from the last fix and its VMG (EtaModel.estimateTtg), local ETA,
 // distance, and data age or error.
-// Fetches on open and every REFRESH_SECONDS while open. SELECT opens the
-// station menu.
+// Fetches on open, then just after each new fix should reach the server
+// (EtaModel.fetchDelay). SELECT opens the station menu.
 
 import Toybox.Application;
 import Toybox.Graphics;
@@ -12,13 +12,11 @@ import Toybox.Time.Gregorian;
 import Toybox.Timer;
 import Toybox.WatchUi;
 
-const REFRESH_SECONDS = 60;
-
 class EtaView extends WatchUi.View {
 
     private var _client;
     private var _timer;
-    private var _ticks = 0;
+    private var _nextFetch = null;  // epoch seconds; null while a fetch is outstanding
 
     function initialize() {
         View.initialize();
@@ -40,7 +38,7 @@ class EtaView extends WatchUi.View {
 
     // stations: also refresh the station list (on open and after a menu choice).
     function refresh(stations) {
-        _ticks = 0;
+        _nextFetch = null;
         _client.fetchEta();
         if (stations) {
             _client.fetchStations();
@@ -48,14 +46,21 @@ class EtaView extends WatchUi.View {
     }
 
     function onTick() as Void {
-        _ticks++;
-        if (_ticks >= REFRESH_SECONDS) {
+        if (_nextFetch != null && Time.now().value() >= _nextFetch) {
             refresh(false);
         }
-        WatchUi.requestUpdate();  // the countdown moves every second
+        WatchUi.requestUpdate();  // the estimate moves every second
     }
 
+    // Schedule the next fetch for just after the next fix reaches the server.
     function onFetched() as Void {
+        var now = Time.now().value();
+        var model = Application.Storage.getValue(KEY_ETA) as Dictionary?;
+        var delay = EtaModel.FETCH_ERROR_S;
+        if (Application.Storage.getValue(KEY_ERROR) == null) {
+            delay = EtaModel.fetchDelay(model != null ? model["nextFixEpoch"] : null, now);
+        }
+        _nextFetch = now + delay;
         WatchUi.requestUpdate();
     }
 

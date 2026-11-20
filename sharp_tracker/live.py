@@ -38,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .api import router as ingest_router
 from .db import get_engine, latest_positions, track_positions
-from .eta import bearing_deg, distance_nm, mean_sog, predict_next, time_to_go, vmg
+from .eta import bearing_deg, distance_nm, mean_sog, next_fix_time, predict_next, time_to_go, vmg
 
 LOG = logging.getLogger(__name__)
 
@@ -273,7 +273,7 @@ def eta(
     if (lat is None) != (lon is None):
         raise HTTPException(status_code=422, detail="lat and lon go together")
     now = datetime.now(timezone.utc)
-    rows = latest_positions(2)
+    rows = latest_positions(4)  # newest for the fix and heading, all four for the cadence
     fix = rows[0] if rows else None
     heading = _heading(fix, rows[1] if len(rows) > 1 else None) if fix else None
     reason = None
@@ -314,6 +314,9 @@ def eta(
         "speed_kn": round(speed, 2) if speed is not None else None,
         "speed_source": source,
         **_fix_fields(fix, now),
+        # When the source should send its next fix, so clients can poll just
+        # after it arrives instead of on a fixed timer.
+        "next_fix_epoch": _epoch(next_fix_time([r["received_at"] for r in rows])),
     }
 
 

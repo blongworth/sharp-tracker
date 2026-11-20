@@ -19,7 +19,8 @@
     "fix_time": "2026-11-19T13:21:45+00:00",
     "fix_epoch": 1795094505,
     "fix_age_s": 7,
-    "stale": false
+    "stale": false,
+    "next_fix_epoch": 1795094565
   },
   "auto": {
     "target": {
@@ -41,7 +42,8 @@
     "fix_time": "2026-11-19T13:21:45+00:00",
     "fix_epoch": 1795094505,
     "fix_age_s": 7,
-    "stale": false
+    "stale": false,
+    "next_fix_epoch": 1795094565
   },
   "nothing_ahead": {
     "target": null,
@@ -57,7 +59,8 @@
     "fix_time": "2026-11-19T13:21:45+00:00",
     "fix_epoch": 1795094505,
     "fix_age_s": 7,
-    "stale": false
+    "stale": false,
+    "next_fix_epoch": 1795094565
   },
   "no_fix": {
     "target": {
@@ -79,6 +82,7 @@
     "fix_time": null,
     "fix_epoch": null,
     "fix_age_s": null,
-    "stale": false
+    "stale": false,
+    "next_fix_epoch": null
   }
 }

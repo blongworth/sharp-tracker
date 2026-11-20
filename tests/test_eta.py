@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from sharp_tracker.eta import (
@@ -7,6 +9,7 @@ from sharp_tracker.eta import (
     bearing_deg,
     distance_nm,
     mean_sog,
+    next_fix_time,
     predict_next,
     time_to_go,
     vmg,
@@ -92,3 +95,14 @@ def test_vmg():
     assert vmg(10.0, 350.0, 10.0) == pytest.approx(10.0 * 0.9396926)  # wraps through north
     assert vmg(None, 180.0, 180.0) is None
     assert vmg(10.0, None, 180.0) is None
+
+
+def test_next_fix_time():
+    t0 = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc)
+    every_10s = [t0 - timedelta(seconds=10 * i) for i in range(4)]
+    assert next_fix_time(every_10s) == t0 + timedelta(seconds=10)
+    # One outage among the gaps: the median still says 10 s.
+    with_outage = [t0, t0 - timedelta(seconds=10), t0 - timedelta(hours=3), t0 - timedelta(hours=3, seconds=10)]
+    assert next_fix_time(with_outage) == t0 + timedelta(seconds=10)
+    assert next_fix_time([t0]) is None
+    assert next_fix_time([]) is None
