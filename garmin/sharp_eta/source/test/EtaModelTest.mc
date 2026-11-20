@@ -70,12 +70,6 @@ function formatsTimeToGo(logger as Test.Logger) as Boolean {
     Test.assertEqual(EtaModel.formatTtg(0), "due");
     Test.assertEqual(EtaModel.formatTtg(-5), "due");
     Test.assertEqual(EtaModel.formatTtg(null), "--");
-    Test.assertEqual(EtaModel.formatCountdown(4906), "1:21:46");
-    Test.assertEqual(EtaModel.formatCountdown(4905), "1:21:45");  // ticks each second
-    Test.assertEqual(EtaModel.formatCountdown(59), "0:00:59");
-    Test.assertEqual(EtaModel.formatCountdown(36000), "10:00:00");
-    Test.assertEqual(EtaModel.formatCountdown(0), "due");
-    Test.assertEqual(EtaModel.formatCountdown(null), "--");
     Test.assertEqual(EtaModel.remainingSeconds(1000, 400), 600);
     Test.assert(EtaModel.remainingSeconds(null, 400) == null);
     return true;
@@ -104,7 +98,7 @@ function estimatesTtgFromVmg(logger as Test.Logger) as Boolean {
     // Heading away (VMG -10): 11 nm to go.
     Test.assertEqual(EtaModel.estimateTtg(underway(-10.0), 1360), 3960);
     // Past the target: due, distance 0.
-    Test.assertEqual(EtaModel.formatCountdown(EtaModel.estimateTtg(underway(10.0), 5000)), "due");
+    Test.assertEqual(EtaModel.formatTtg(EtaModel.estimateTtg(underway(10.0), 5000)), "due");
     // No VMG (older server): count down from the server's ETA.
     Test.assertEqual(EtaModel.estimateTtg(underway(null), 1360), 3240);
     Test.assertEqual(EtaModel.estimateDistance(underway(null), 1360), 10.0);

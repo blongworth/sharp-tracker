@@ -90,16 +90,11 @@ class EtaView extends WatchUi.View {
         dc.setColor(Graphics.COLOR_ORANGE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(cx, h * 0.16, Graphics.FONT_SMALL, title, Graphics.TEXT_JUSTIFY_CENTER);
 
-        // Time to go, counting down every second between fixes and fetches.
-        // Step down a font size if "10:00:00" would not fit the round face.
+        // Time to go (h:mm), re-estimated every second between fixes and fetches.
         var ttgSeconds = EtaModel.estimateTtg(model, now);
-        var ttg = EtaModel.formatCountdown(ttgSeconds);
-        var font = Graphics.FONT_NUMBER_HOT;
-        if (dc.getTextWidthInPixels(ttg, font) > w * 0.85) {
-            font = Graphics.FONT_NUMBER_MEDIUM;
-        }
         dc.setColor(main, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(cx, h * 0.42, font, ttg, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.drawText(cx, h * 0.42, Graphics.FONT_NUMBER_HOT, EtaModel.formatTtg(ttgSeconds),
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
         dc.drawText(cx, h * 0.60, Graphics.FONT_SMALL,
             "ETA " + localTime(ttgSeconds == null ? null : now + ttgSeconds) + "  "
