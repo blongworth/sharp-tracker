@@ -267,8 +267,8 @@ function currentHeading(p) {
 
 // --- Time to go -----------------------------------------------------------
 // The server computes distance / TTG / ETA (/api/eta) so the map, the /eta
-// page, and the watch agree. TTG is counted down locally from eta_epoch
-// between fetches.
+// page, and the watch agree. Between fetches, distance / TTG / ETA are
+// dead-reckoned from the fix at its VMG toward the target (estimate()).
 
 function populateTargetSelect() {
   const sel = document.getElementById("eta-target");
@@ -296,10 +296,11 @@ function renderEta() {
   const r = etaResult;
   const set = (id, text) => { document.getElementById(id).textContent = text; };
   if (!r) { set("eta-dist", "\u2014"); set("eta-ttg", "\u2014"); set("eta-eta", "\u2014"); return; }
-  set("eta-dist", fmtNm(r.distance_nm));
-  set("eta-ttg", fmtTtg(remainingS(r.eta_epoch)));
-  set("eta-eta", fmtEtaUtc(r.eta_epoch));
-  set("eta-note", [targetLabel(r), fmtEtaLocal(r.eta_epoch), speedLabel(r)].filter(Boolean).join(" \u00b7 "));
+  const e = estimate(r.distance_nm, r.vmg_kn, r.speed_kn, r.fix_epoch, r.eta_epoch);
+  set("eta-dist", fmtNm(e.distance));
+  set("eta-ttg", fmtTtg(e.ttg));
+  set("eta-eta", fmtEtaUtc(e.etaEpoch));
+  set("eta-note", [targetLabel(r), fmtEtaLocal(e.etaEpoch), speedLabel(r)].filter(Boolean).join(" \u00b7 "));
 }
 setInterval(renderEta, 5000);
 

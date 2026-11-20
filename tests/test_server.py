@@ -302,10 +302,14 @@ def test_eta_without_fixes(client, stations):
 
 def test_eta_stations_nearest_first(client, stations):
     steaming_south(client)
-    rows = client.get("/api/eta/stations").json()["stations"]
+    body = client.get("/api/eta/stations").json()
+    rows = body["stations"]
     assert [r["station"] for r in rows] == ["L5", "L1", "L9"]
-    assert set(rows[0]) == {"station", "name", "distance_nm", "ttg_s", "eta", "eta_epoch"}
+    assert set(rows[0]) == {"station", "name", "distance_nm", "ttg_s", "eta", "eta_epoch", "vmg_kn"}
     assert rows[0]["ttg_s"] == pytest.approx(2160, abs=5)
+    # Steaming south: closing on L5 ahead, opening from L1 behind.
+    assert rows[0]["vmg_kn"] == pytest.approx(10.0) and rows[1]["vmg_kn"] == pytest.approx(-10.0)
+    assert body["speed_kn"] == 10.0 and body["fix_epoch"] == rows[0]["eta_epoch"] - rows[0]["ttg_s"]
 
 
 def test_eta_page_and_script_served(client):

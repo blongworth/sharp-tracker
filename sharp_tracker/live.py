@@ -325,12 +325,16 @@ def eta_stations(speed_kn: float | None = Query(None, gt=0, le=50)) -> dict[str,
     """
     now = datetime.now(timezone.utc)
     stations = _stations()
-    fix = latest_positions(1)
-    fix = fix[0] if fix else None
+    rows = latest_positions(2)
+    fix = rows[0] if rows else None
+    heading = _heading(fix, rows[1] if len(rows) > 1 else None) if fix else None
     speed, _ = _speed(speed_kn, now)
     result = []
     for s in stations:
         fields = _eta_fields(fix, s["lat"], s["lon"], speed)
+        made_good = (
+            vmg(fix.get("speed_knots"), heading, fields["bearing_deg"]) if fix is not None else None
+        )
         result.append(
             {
                 "station": s["station"],
@@ -339,8 +343,14 @@ def eta_stations(speed_kn: float | None = Query(None, gt=0, le=50)) -> dict[str,
                 "ttg_s": fields["ttg_s"],
                 "eta": fields["eta"],
                 "eta_epoch": fields["eta_epoch"],
+                "vmg_kn": round(made_good, 2) if made_good is not None else None,
             }
         )
     if fix is not None:
         result.sort(key=lambda r: r["distance_nm"])
-    return {"stations": result}
+    # speed_kn and fix_epoch let clients dead-reckon each row between fixes.
+    return {
+        "stations": result,
+        "speed_kn": round(speed, 2) if speed is not None else None,
+        "fix_epoch": _epoch(fix["display_time"]) if fix else None,
+    }

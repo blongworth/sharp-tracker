@@ -190,7 +190,7 @@ API:
 | `GET /api/eta?lat=41.1&lon=-70.9&name=Buoy` | ETA to a point |
 | `GET /api/eta` | ETA to `ETA_DEFAULT_TARGET` (default `auto`) |
 | `...&speed_kn=10` | Use a planned speed instead of mean SOG |
-| `GET /api/eta/stations` | `{"stations": [...]}`: every station, nearest first |
+| `GET /api/eta/stations` | `{"stations": [...], "speed_kn", "fix_epoch"}`: every station, nearest first, each with its `vmg_kn` |
 
 Every `/api/eta` response has the same keys, with nulls when a value is
 unknown:
@@ -198,7 +198,9 @@ unknown:
 - `distance_nm`, `bearing_deg`, `ttg_s`;
 - `eta` (ISO) and `eta_epoch`;
 - `vmg_kn`: speed made good toward the target at the fix (SOG × cos of the
-  angle between COG and the bearing; negative when moving away);
+  angle between COG and the bearing; negative when moving away). Between
+  fixes the map, the `/eta` page and the watch dead-reckon with it: the
+  distance shrinks at the VMG, and TTG is that distance at the speed basis;
 - `speed_kn` and `speed_source` (`sog_30min` or `planned`);
 - `fix_time`, `fix_epoch`, `fix_age_s` and `stale`.
 

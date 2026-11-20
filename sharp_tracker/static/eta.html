@@ -57,6 +57,7 @@
 let target = loadTarget();
 let result = null;
 let stations = [];
+let stationsBasis = {};  // speed_kn and fix_epoch shared by every row
 
 function set(id, text, cls) {
   const el = document.getElementById(id);
@@ -74,9 +75,10 @@ function render() {
   const r = result;
   if (!r) return;
   set("target", targetLabel(r));
-  set("ttg", fmtTtg(remainingS(r.eta_epoch)));
-  set("eta", r.eta_epoch ? fmtEtaUtc(r.eta_epoch) + " (" + fmtEtaLocal(r.eta_epoch) + ")" : "—");
-  set("dist", fmtNm(r.distance_nm));
+  const e = estimate(r.distance_nm, r.vmg_kn, r.speed_kn, r.fix_epoch, r.eta_epoch);
+  set("ttg", fmtTtg(e.ttg));
+  set("eta", e.etaEpoch ? fmtEtaUtc(e.etaEpoch) + " (" + fmtEtaLocal(e.etaEpoch) + ")" : "—");
+  set("dist", fmtNm(e.distance));
   set("bearing", r.bearing_deg === null ? "—" : r.bearing_deg.toFixed(0) + "°");
   set("speedinfo", speedLabel(r));
   const age = r.fix_epoch ? Date.now() / 1000 - r.fix_epoch : null;
@@ -91,7 +93,8 @@ function renderStations() {
   for (const s of stations) {
     const tr = document.createElement("tr");
     if (s.station === current) tr.className = "selected";
-    for (const text of [s.station + " ", fmtNm(s.distance_nm), fmtTtg(remainingS(s.eta_epoch)), fmtEtaUtc(s.eta_epoch)]) {
+    const e = estimate(s.distance_nm, s.vmg_kn, stationsBasis.speed_kn, stationsBasis.fix_epoch, s.eta_epoch);
+    for (const text of [s.station + " ", fmtNm(e.distance), fmtTtg(e.ttg), fmtEtaUtc(e.etaEpoch)]) {
       const td = document.createElement("td");
       td.textContent = text;
       tr.appendChild(td);
@@ -132,7 +135,9 @@ async function refresh() {
     const [r, s] = await Promise.all([fetch(etaUrl(target, speed)), fetch(stationsUrl(speed))]);
     if (r.status === 404 && target.mode === "station") { setTarget({ mode: "auto" }); return; }
     result = r.ok ? await r.json() : null;
-    stations = s.ok ? (await s.json()).stations : [];
+    const body = s.ok ? await s.json() : { stations: [] };
+    stations = body.stations;
+    stationsBasis = body;
     if (!r.ok) set("target", "ETA unavailable (HTTP " + r.status + ")");
   } catch (e) {
     set("target", "Server unreachable");

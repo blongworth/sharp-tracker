@@ -56,6 +56,24 @@ function remainingS(etaEpoch) {
   return etaEpoch === null || etaEpoch === undefined ? null : etaEpoch - Date.now() / 1000;
 }
 
+// Distance, TTG and ETA now, dead-reckoned from the fix: the ship closes on
+// the target at vmg_kn (speed made good toward it at the fix), and TTG is the
+// remaining distance at the speed basis. Off course TTG counts down slower than
+// the clock, heading away it counts up. Without a VMG it counts down from the
+// server's ETA. Same model as the watch (EtaModel.estimateTtg).
+function estimate(distance, vmgKn, speedKn, fixEpoch, etaEpoch) {
+  const now = Date.now() / 1000;
+  const known = (v) => v !== null && v !== undefined;
+  if (!known(distance)) return { distance: null, ttg: null, etaEpoch: null };
+  if (!known(vmgKn) || !known(speedKn) || speedKn <= 0 || !known(fixEpoch)) {
+    return { distance, ttg: remainingS(etaEpoch), etaEpoch: known(etaEpoch) ? etaEpoch : null };
+  }
+  const d = Math.max(distance - vmgKn * Math.max(now - fixEpoch, 0) / 3600, 0);
+  if (!known(etaEpoch)) return { distance: d, ttg: null, etaEpoch: null };  // stopped
+  const ttg = d / speedKn * 3600;
+  return { distance: d, ttg, etaEpoch: now + ttg };
+}
+
 function fmtTtg(s) {
   if (s === null || s === undefined || Number.isNaN(s)) return "—";
   if (s <= 0) return "due";
