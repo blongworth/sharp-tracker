@@ -1,0 +1,8 @@
+<settings>
+    <setting propertyKey="@Properties.serverUrl" title="@Strings.ServerUrlTitle">
+        <settingConfig type="alphaNumeric"/>
+    </setting>
+    <setting propertyKey="@Properties.plannedSpeedKn" title="@Strings.SpeedTitle">
+        <settingConfig type="numeric" min="0" max="50"/>
+    </setting>
+</settings>

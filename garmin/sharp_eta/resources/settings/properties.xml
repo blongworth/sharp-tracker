@@ -1,0 +1,5 @@
+<properties>
+    <!-- Set in the Garmin Connect phone app. Empty: debug builds use DEBUG_SERVER_URL. -->
+    <property id="serverUrl" type="string"></property>
+    <property id="plannedSpeedKn" type="float">0.0</property>
+</properties>

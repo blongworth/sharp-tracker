@@ -1,0 +1,6 @@
+# CircuitPython libraries for the Pico firmware, installed onto CIRCUITPY/lib/ by
+# circup (scripts/deploy_pico.py). circup picks the .mpy builds matching the
+# board's CircuitPython version and pulls in dependencies such as
+# adafruit_connection_manager.
+adafruit_requests
+adafruit_ntp

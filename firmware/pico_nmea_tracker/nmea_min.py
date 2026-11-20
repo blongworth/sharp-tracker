@@ -14,15 +14,15 @@ def parse_line(line):
     received_at, which the caller stamps with the current wall-clock time.
     """
     raw = line.strip()
-    if not raw.startswith("$") or "*" not in raw or not _checksum_ok(raw):
+    if not is_sentence(raw):
         return None, None
 
     fields = raw[1:].split("*")[0].split(",")
     header = fields[0]
-    if len(header) < 6:
+    if len(header) < 5:  # e.g. "GPGGA" ("$" already stripped)
         return None, None
-    talker = header[1:3]
-    sentence_type = header[3:6]
+    talker = header[0:2]
+    sentence_type = header[2:5]
 
     try:
         if sentence_type == "VTG":
@@ -30,10 +30,21 @@ def parse_line(line):
         if sentence_type == "GGA":
             return None, _parse_gga(fields, talker, raw)
         if sentence_type == "RMC":
-            return None, _parse_rmc(fields, talker, raw)
+            # RMC speed/course also feed navigation, like nmea.py, so they
+            # carry forward onto later GGA fixes.
+            speed = _float_or_none(fields[7]) if len(fields) > 7 else None
+            course = _float_or_none(fields[8]) if len(fields) > 8 else None
+            nav = {"speed_knots": speed, "course_deg": course} if speed is not None or course is not None else None
+            return nav, _parse_rmc(fields, talker, raw)
     except (IndexError, ValueError):
         return None, None
     return None, None
+
+
+def is_sentence(line):
+    """True for a well-formed NMEA sentence with a valid checksum, fix or not."""
+    raw = line.strip()
+    return raw.startswith("$") and "*" in raw and _checksum_ok(raw)
 
 
 def _checksum_ok(sentence):
@@ -89,6 +100,8 @@ def _parse_gga(f, talker, raw):
     lon = _to_decimal(f[4], f[5])
     if lat is None or lon is None or (lat == 0 and lon == 0):
         return None
+    if _int_or_none(f[6]) == 0:
+        return None  # quality 0 = no fix
     return {
         "fix_time": None,
         "talker": talker,
@@ -130,6 +143,8 @@ def _parse_rmc(f, talker, raw):
 def _parse_vtg(f):
     # $--VTG,track,T,magtrack,M,speedKnots,N,speedKmh,K,mode
     course = _float_or_none(f[1]) if len(f) > 1 else None
+    if course is None and len(f) > 3:
+        course = _float_or_none(f[3])  # magnetic track fallback, as in nmea.py
     speed = _float_or_none(f[5]) if len(f) > 5 else None
     if course is None and speed is None:
         return None

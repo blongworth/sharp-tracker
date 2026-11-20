@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import socket
 import threading
 import time
@@ -15,7 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .db import insert_position, insert_positions
+from .averaging import Averager
+from .db import get_forward_cursor, insert_position, mark_forwarded, unsent_positions
 from .nmea import parse_line
 
 LOG = logging.getLogger(__name__)
@@ -23,14 +23,26 @@ LOG = logging.getLogger(__name__)
 DEFAULT_HOST = "192.168.20.215"
 DEFAULT_PORT = 4000
 DEFAULT_SERIAL_BAUD = 4800
+# Average fixes into UTC-aligned windows of this many seconds (see averaging.py).
+# 0 stores every fix as received, including both halves of a GGA/RMC pair.
+AVERAGE_SECONDS = int(os.getenv("AVERAGE_SECONDS", "60"))
+# TCP read timeout: how often the read loop wakes to close a due averaging
+# window when no data (or no valid fix) is arriving.
+SOURCE_POLL_SECONDS = 1.0
 BATCH_SIZE = 50
-FLUSH_SECONDS = 1.0
-MAX_QUEUE = 2000
+IDLE_SECONDS = 1.0
+MAX_BACKOFF_SECONDS = 60.0
+# Repeat the 'source unavailable' warning every N failed attempts (~5 min at 5 s).
+SOURCE_WARNING_EVERY = 60
 
 LATEST_NAV: dict[str, Any] = {}
-_position_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=MAX_QUEUE)
-_sender_thread: threading.Thread | None = None
-_last_fix: tuple[datetime, dict[str, Any]] | None = None
+_forwarder_thread: threading.Thread | None = None
+_averager: Averager | None = None
+_source_failures = 0
+
+
+class ForwardError(Exception):
+    """The ingest API answered, but did not accept the batch."""
 
 
 def collect_forever(
@@ -38,41 +50,92 @@ def collect_forever(
     port: int | None = None,
     reconnect_seconds: float = 5.0,
 ) -> None:
-    """Read NMEA forever and persist or post parsed positions.
+    """Read NMEA forever, log fixes locally, and forward them if TRACKER_API_URL is set.
 
     Set NMEA_SOURCE=serial or NMEA_SERIAL_PORT=/dev/... to read from a serial
     device. Otherwise the collector reads TCP from NMEA_HOST:NMEA_PORT.
     """
     source = os.getenv("NMEA_SOURCE", "serial" if os.getenv("NMEA_SERIAL_PORT") else "tcp").lower()
-    sink = "API" if os.getenv("TRACKER_API_URL") else "database"
-    if sink == "API":
-        _ensure_sender()
+    api_url = os.getenv("TRACKER_API_URL")
+    sink = f"local database + {api_url}" if api_url else "local database"
 
+    # Config errors fail once, loudly, instead of retrying forever.
+    if source == "tcp":
+        host = host or os.getenv("NMEA_HOST", DEFAULT_HOST)
+        port = port or int(os.getenv("NMEA_PORT", str(DEFAULT_PORT)))
+        LOG.info("Starting TCP NMEA collector for %s:%s -> %s", host, port, sink)
+    elif source == "serial":
+        if not os.getenv("NMEA_SERIAL_PORT"):
+            raise ValueError("NMEA_SOURCE=serial requires NMEA_SERIAL_PORT")
+        LOG.info("Starting serial NMEA collector for %s -> %s", os.environ["NMEA_SERIAL_PORT"], sink)
+    else:
+        raise ValueError("NMEA_SOURCE must be 'tcp' or 'serial'")
+
+    if api_url:
+        _ensure_forwarder(api_url)
+
+    global _source_failures
+    _source_failures = 0
     while True:
         try:
             if source == "serial":
                 _collect_serial_once()
-            elif source == "tcp":
-                host = host or os.getenv("NMEA_HOST", DEFAULT_HOST)
-                port = port or int(os.getenv("NMEA_PORT", str(DEFAULT_PORT)))
-                LOG.info("Starting TCP NMEA collector for %s:%s -> %s", host, port, sink)
-                _collect_tcp_once(host, port)
             else:
-                raise ValueError("NMEA_SOURCE must be 'tcp' or 'serial'")
+                _collect_tcp_once(host, port)
         except KeyboardInterrupt:
             raise
+        except OSError as exc:
+            # Expected at sea: source unreachable or closed, serial device unplugged.
+            # One line on the first failure, then a reminder every ~5 min, not a traceback every 5 s.
+            _source_failures += 1
+            if _source_failures == 1 or _source_failures % SOURCE_WARNING_EVERY == 0:
+                LOG.warning(
+                    "NMEA source unavailable (%s); retrying every %.0fs (%d failed attempts)",
+                    exc,
+                    reconnect_seconds,
+                    _source_failures,
+                )
+            else:
+                LOG.debug("NMEA source still unavailable (%s)", exc)
         except Exception:
-            LOG.exception("NMEA collector disconnected; reconnecting in %.1fs", reconnect_seconds)
-            time.sleep(reconnect_seconds)
+            _source_failures += 1
+            LOG.exception("NMEA collector error; reconnecting in %.0fs", reconnect_seconds)
+        # Source down: still close a window whose end has passed.
+        close_due_window()
+        time.sleep(reconnect_seconds)
+
+
+def _source_connected(description: str) -> None:
+    """Log the (re)connection and reset the failure count."""
+    global _source_failures
+    if _source_failures:
+        LOG.info("Connected to %s after %d failed attempts", description, _source_failures)
+    else:
+        LOG.info("Connected to %s", description)
+    _source_failures = 0
 
 
 def _collect_tcp_once(host: str, port: int) -> None:
     with socket.create_connection((host, port), timeout=15) as sock:
-        LOG.info("Connected to TCP NMEA source %s:%s", host, port)
-        sock.settimeout(None)
-        file = sock.makefile("r", encoding="ascii", errors="ignore", newline="\n")
-        for line in file:
-            process_nmea_line(line)
+        _source_connected(f"TCP NMEA source {host}:{port}")
+        sock.settimeout(SOURCE_POLL_SECONDS)
+        partial = b""
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:  # quiet source: still close a due window
+                close_due_window()
+                continue
+            if not chunk:
+                break
+            *lines, partial = (partial + chunk).split(b"\n")
+            for line in lines:
+                process_nmea_line(line.decode("ascii", errors="ignore"))
+            # Data may keep flowing with no valid fix (RMC status V), so add()
+            # alone would never close the window.
+            close_due_window()
+    # EOF: without this a source that accepts then closes would be re-dialed in a tight loop.
+    raise ConnectionError("source closed the connection")
 
 
 def _collect_serial_once() -> None:
@@ -80,26 +143,37 @@ def _collect_serial_once() -> None:
     baud = int(os.getenv("NMEA_SERIAL_BAUD", str(DEFAULT_SERIAL_BAUD)))
     timeout = float(os.getenv("NMEA_SERIAL_TIMEOUT", "5"))
 
-    LOG.info("Starting serial NMEA collector for %s at %s baud", serial_port, baud)
+    # serial.SerialException subclasses OSError, so a missing device is retried quietly.
     with serial.Serial(serial_port, baudrate=baud, timeout=timeout) as ser:
+        _source_connected(f"serial NMEA source {serial_port} at {baud} baud")
         while True:
             raw = ser.readline()
-            if not raw:
+            if raw:
+                process_nmea_line(raw.decode("ascii", errors="ignore"))
+            else:
                 LOG.debug("No serial data received within %.1fs", timeout)
-                continue
-            process_nmea_line(raw.decode("ascii", errors="ignore"))
+            # readline returns at least every `timeout` s, so a due window
+            # closes even when the GPS is quiet or has no valid fix.
+            close_due_window()
 
 
-def process_nmea_line(line: str) -> None:
-    """Parse one NMEA line (single parse) and queue or store the position."""
-    global _last_fix
+def process_nmea_line(line: str, now: datetime | None = None) -> dict[str, Any] | None:
+    """Parse one NMEA line; returns the position stored locally, if any.
 
-    now = datetime.now(timezone.utc)
+    With AVERAGE_SECONDS > 0, fixes are averaged and one row is stored per
+    window, when the first fix of the next window arrives. Every stored row
+    goes to the local database first; when TRACKER_API_URL is set, the
+    forwarder thread sends it on from there, so nothing is lost if the link or
+    the server is down.
+    """
+    global _averager
+
+    now = now or datetime.now(timezone.utc)
     nav, position = parse_line(line, received_at=now)
     if nav:
         LATEST_NAV.update({k: v for k, v in nav.items() if v is not None})
     if position is None:
-        return
+        return None
 
     # GGA has position but no SOG/COG; VTG often arrives nearby. Carry the
     # latest navigation values forward so the dashboard can show heading.
@@ -107,100 +181,103 @@ def process_nmea_line(line: str) -> None:
         if position.get(key) is None and LATEST_NAV.get(key) is not None:
             position[key] = LATEST_NAV[key]
 
-    if _is_duplicate(position, now):
-        return
+    if AVERAGE_SECONDS > 0:
+        if _averager is None or _averager.window != AVERAGE_SECONDS:
+            _averager = Averager(AVERAGE_SECONDS)
+        averaged = _averager.add(now.timestamp(), position)
+        if averaged is None:
+            return None
+        position = {**averaged, "received_at": now.isoformat()}
 
-    _last_fix = (now, position)
-    write_position(position)
+    return _store(position)
+
+
+def close_due_window(now: datetime | None = None) -> dict[str, Any] | None:
+    """Store the open averaging window if its end has passed; returns the row.
+
+    The read loops call this between reads, so a window closes on time when
+    the GPS goes quiet or stops producing valid fixes, instead of waiting for
+    the next good fix.
+    """
+    if _averager is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    averaged = _averager.close_due(now.timestamp())
+    if averaged is None:
+        return None
+    return _store({**averaged, "received_at": now.isoformat()})
+
+
+def _store(position: dict[str, Any]) -> dict[str, Any]:
+    insert_position(position)
     LOG.debug(
         "Position %.6f, %.6f from %s",
         position["latitude"],
         position["longitude"],
         position.get("sentence_type"),
     )
+    return position
 
 
-def _is_duplicate(position: dict[str, Any], now: datetime) -> bool:
-    """Skip GGA/RMC pairs that report the same fix within a second."""
-    if _last_fix is None:
-        return False
-    last_time, last_position = _last_fix
-    if (now - last_time).total_seconds() > 1.0:
-        return False
-    return (
-        abs(position["latitude"] - last_position["latitude"]) < 1e-5
-        and abs(position["longitude"] - last_position["longitude"]) < 1e-5
-    )
+def _ensure_forwarder(api_url: str) -> None:
+    """Start the background thread that forwards unsent fixes to the API."""
+    global _forwarder_thread
+    if _forwarder_thread is None or not _forwarder_thread.is_alive():
+        _forwarder_thread = threading.Thread(target=_forward_loop, args=(api_url,), daemon=True)
+        _forwarder_thread.start()
 
 
-def write_position(position: dict[str, Any]) -> None:
-    """Queue position for the API when configured, otherwise write to local DB."""
-    api_url = os.getenv("TRACKER_API_URL")
-    if not api_url:
-        insert_position(position)
-        return
-
-    try:
-        _position_queue.put_nowait(position)
-    except queue.Full:
-        LOG.warning("Position queue full; dropping position to avoid backpressure")
-
-
-def _ensure_sender() -> None:
-    """Start the background thread that flushes queued positions in batches."""
-    global _sender_thread
-    if _sender_thread is None or not _sender_thread.is_alive():
-        _sender_thread = threading.Thread(target=_send_loop, daemon=True)
-        _sender_thread.start()
-
-
-def _send_loop() -> None:
-    api_url = os.getenv("TRACKER_API_URL")
+def _forward_loop(api_url: str) -> None:
+    """Forward unsent fixes forever, backing off while the API is unreachable."""
     session = requests.Session()
+    backoff = 0.0
     while True:
-        batch = _drain_batch()
-        if batch:
-            _flush(session, batch, api_url)
-
-
-def _drain_batch() -> list[dict[str, Any]]:
-    """Wait for the first queued position, then drain up to BATCH_SIZE."""
-    try:
-        batch = [_position_queue.get(timeout=FLUSH_SECONDS)]
-    except queue.Empty:
-        return []
-    while len(batch) < BATCH_SIZE:
         try:
-            batch.append(_position_queue.get_nowait())
-        except queue.Empty:
-            break
-    return batch
+            sent = _forward_once(session, api_url)
+        except (requests.RequestException, ForwardError) as exc:
+            backoff = min(max(backoff * 2, 2.0), MAX_BACKOFF_SECONDS)
+            LOG.warning("Forwarding to %s failed (%s); retrying in %.0fs", api_url, exc, backoff)
+            time.sleep(backoff)
+            continue
+        except Exception:
+            # e.g. local DB locked; keep the thread alive.
+            LOG.exception("Forwarder error; retrying in %.0fs", MAX_BACKOFF_SECONDS)
+            time.sleep(MAX_BACKOFF_SECONDS)
+            continue
+        if backoff:
+            LOG.info("Forwarding to %s recovered", api_url)
+            backoff = 0.0
+        if sent < BATCH_SIZE:
+            time.sleep(IDLE_SECONDS)  # caught up; full batches loop immediately
 
 
-def _flush(session: requests.Session, batch: list[dict[str, Any]], api_url: str) -> None:
-    endpoint = api_url.rstrip("/") + "/positions/batch"
+def _forward_once(session: Any, api_url: str) -> int:
+    """POST the next batch of unsent fixes; returns how many were accepted.
+
+    `session` is anything with a requests-style ``post`` (a requests.Session,
+    or a FastAPI TestClient in tests). The cursor only advances after the API
+    accepts the batch; a resend after a lost response is harmless because
+    inserts are idempotent.
+    """
+    batch = unsent_positions(get_forward_cursor(), limit=BATCH_SIZE)
+    if not batch:
+        return 0
+
     headers: dict[str, str] = {}
     token = os.getenv("TRACKER_INGEST_TOKEN")
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    payload = {"positions": batch}
+    response = session.post(
+        api_url.rstrip("/") + "/positions/batch",
+        json={"positions": batch},
+        headers=headers,
+        timeout=10,
+    )
+    if response.status_code != 201:
+        raise ForwardError(f"HTTP {response.status_code}: {response.text[:200]}")
 
-    for attempt in (1, 2):
-        try:
-            response = session.post(endpoint, json=payload, headers=headers, timeout=10)
-            response.raise_for_status()
-            return
-        except requests.RequestException as exc:
-            if attempt == 1:
-                LOG.warning("Batch POST of %d positions failed (%s); retrying", len(batch), exc)
-                time.sleep(2)
-
-    LOG.error("Batch POST failed twice; writing %d positions to local DB as fallback", len(batch))
-    for position in batch:
-        try:
-            insert_position(position)
-        except Exception:
-            LOG.exception("Local fallback insert failed")
+    mark_forwarded(batch[-1]["id"])
+    return len(batch)
 
 
 def main() -> None:

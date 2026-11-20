@@ -1,0 +1,4 @@
+<resources>
+    <!-- Real /api/eta responses; tests/test_server.py checks the server still matches. -->
+    <jsonData id="EtaSample" filename="eta_sample.json"/>
+</resources>

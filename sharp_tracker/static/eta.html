@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>SHARP Tracker — Time to go</title>
+<script src="/eta.js"></script>
+<style>
+  :root { color-scheme: light dark; --fg: #111; --bg: #fff; --dim: #666; --line: #ddd; --hl: #fef3c7; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #eee; --bg: #111; --dim: #999; --line: #333; --hl: #3b2f0a; } }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font-family: -apple-system, system-ui, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  select { flex: 1; min-width: 12em; font-size: 15px; padding: 4px; }
+  input[type=number] { width: 5em; font-size: 15px; }
+  .dim { color: var(--dim); font-size: 13px; }
+  #target { font-size: 18px; font-weight: 600; }
+  #ttg { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; margin: 6px 0; }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+  .facts dt { color: var(--dim); }
+  .facts dd { margin: 0; }
+  .stale { color: #dc2626; }
+  table { width: 100%; border-collapse: collapse; margin-top: 20px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  th:not(:first-child), td:not(:first-child) { text-align: right; }
+  tbody tr { cursor: pointer; }
+  tbody tr.selected { background: var(--hl); }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <div class="controls">
+    <select id="target-select" aria-label="Target"></select>
+    <label class="dim">planned <input type="number" id="speed" min="0" max="50" step="0.5" placeholder="SOG"/> kn</label>
+  </div>
+
+  <div id="target">&mdash;</div>
+  <div id="ttg">&mdash;</div>
+  <dl class="facts">
+    <dt>ETA</dt><dd id="eta">&mdash;</dd>
+    <dt>Distance</dt><dd id="dist">&mdash;</dd>
+    <dt>Bearing</dt><dd id="bearing">&mdash;</dd>
+    <dt>Speed</dt><dd id="speedinfo">&mdash;</dd>
+    <dt>Fix</dt><dd id="fix">&mdash;</dd>
+  </dl>
+
+  <table>
+    <thead><tr><th>Station</th><th>Distance</th><th>TTG</th><th>ETA (UTC)</th></tr></thead>
+    <tbody id="stations"></tbody>
+  </table>
+  <p class="dim">Tap a station to target it. <a href="/">Map</a> (shares this browser's target).</p>
+</main>
+<script>
+"use strict";
+
+let target = loadTarget();
+let result = null;
+let stations = [];
+let stationsBasis = {};  // speed_kn and fix_epoch shared by every row
+
+function set(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  if (cls !== undefined) el.className = cls;
+}
+
+function ago(s) {
+  if (s < 90) return Math.round(s) + " s ago";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  return (s / 3600).toFixed(1) + " h ago";
+}
+
+function render() {
+  const r = result;
+  if (!r) return;
+  set("target", targetLabel(r));
+  const e = estimate(r.distance_nm, r.vmg_kn, r.speed_kn, r.fix_epoch, r.eta_epoch);
+  set("ttg", fmtTtg(e.ttg));
+  set("eta", e.etaEpoch ? fmtEtaUtc(e.etaEpoch) + " (" + fmtEtaLocal(e.etaEpoch) + ")" : "—");
+  set("dist", fmtNm(e.distance));
+  set("bearing", r.bearing_deg === null ? "—" : r.bearing_deg.toFixed(0) + "°");
+  set("speedinfo", speedLabel(r));
+  const age = r.fix_epoch ? Date.now() / 1000 - r.fix_epoch : null;
+  set("fix", age === null ? "no position yet" : new Date(r.fix_epoch * 1000).toISOString().slice(11, 19) + " UTC, " + ago(age),
+      r.stale ? "stale" : "");
+}
+
+function renderStations() {
+  const body = document.getElementById("stations");
+  body.innerHTML = "";
+  const current = result && result.target ? result.target.station : null;
+  for (const s of stations) {
+    const tr = document.createElement("tr");
+    if (s.station === current) tr.className = "selected";
+    const e = estimate(s.distance_nm, s.vmg_kn, stationsBasis.speed_kn, stationsBasis.fix_epoch, s.eta_epoch);
+    for (const text of [s.station + " ", fmtNm(e.distance), fmtTtg(e.ttg), fmtEtaUtc(e.etaEpoch)]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    const name = document.createElement("span");
+    name.className = "dim";
+    name.textContent = s.name;
+    tr.firstChild.appendChild(name);
+    tr.addEventListener("click", () => setTarget({ mode: "station", station: s.station }));
+    body.appendChild(tr);
+  }
+}
+
+function populateSelect() {
+  const sel = document.getElementById("target-select");
+  sel.innerHTML = "";
+  const add = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label; sel.appendChild(o);
+  };
+  add("auto", "Auto (station ahead)");
+  if (target.mode === "point") add("point", "Point " + target.lat.toFixed(4) + "°, " + target.lon.toFixed(4) + "°");
+  const names = stations.map((s) => s.station).sort();
+  for (const n of names) add("station:" + n, n);
+  sel.value = target.mode === "station" ? "station:" + target.station : target.mode;
+}
+
+function setTarget(t) {
+  target = t;
+  saveTarget(t);
+  populateSelect();
+  refresh();
+}
+
+async function refresh() {
+  const speed = loadSpeed();
+  try {
+    const [r, s] = await Promise.all([fetch(etaUrl(target, speed)), fetch(stationsUrl(speed))]);
+    if (r.status === 404 && target.mode === "station") { setTarget({ mode: "auto" }); return; }
+    result = r.ok ? await r.json() : null;
+    const body = s.ok ? await s.json() : { stations: [] };
+    stations = body.stations;
+    stationsBasis = body;
+    if (!r.ok) set("target", "ETA unavailable (HTTP " + r.status + ")");
+  } catch (e) {
+    set("target", "Server unreachable");
+  }
+  populateSelect();
+  render();
+  renderStations();
+}
+
+document.getElementById("target-select").addEventListener("change", (e) => {
+  const v = e.target.value;
+  if (v === "auto") setTarget({ mode: "auto" });
+  else if (v.startsWith("station:")) setTarget({ mode: "station", station: v.slice(8) });
+});
+const speedInput = document.getElementById("speed");
+speedInput.value = loadSpeed() || "";
+speedInput.addEventListener("change", () => { saveSpeed(parseFloat(speedInput.value)); refresh(); });
+
+populateSelect();
+refresh();
+setInterval(refresh, 15000);
+setInterval(() => { render(); renderStations(); }, 5000);
+</script>
+</body>
+</html>
