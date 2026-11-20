@@ -1,5 +1,6 @@
-// Main widget view: target name, a large time to go counted down every
-// second from the cached ETA, local ETA, distance, and data age or error.
+// Main widget view: target name, a large time to go re-estimated every
+// second from the last fix and its VMG (EtaModel.estimateTtg), local ETA,
+// distance, and data age or error.
 // Fetches on open and every REFRESH_SECONDS while open. SELECT opens the
 // station menu.
 
@@ -91,7 +92,8 @@ class EtaView extends WatchUi.View {
 
         // Time to go, counting down every second between fixes and fetches.
         // Step down a font size if "10:00:00" would not fit the round face.
-        var ttg = EtaModel.formatCountdown(EtaModel.remainingSeconds(model["etaEpoch"], now));
+        var ttgSeconds = EtaModel.estimateTtg(model, now);
+        var ttg = EtaModel.formatCountdown(ttgSeconds);
         var font = Graphics.FONT_NUMBER_HOT;
         if (dc.getTextWidthInPixels(ttg, font) > w * 0.85) {
             font = Graphics.FONT_NUMBER_MEDIUM;
@@ -100,7 +102,8 @@ class EtaView extends WatchUi.View {
         dc.drawText(cx, h * 0.42, font, ttg, Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
 
         dc.drawText(cx, h * 0.60, Graphics.FONT_SMALL,
-            "ETA " + localTime(model["etaEpoch"]) + "  " + EtaModel.formatDistance(model["distanceNm"]),
+            "ETA " + localTime(ttgSeconds == null ? null : now + ttgSeconds) + "  "
+                + EtaModel.formatDistance(EtaModel.estimateDistance(model, now)),
             Graphics.TEXT_JUSTIFY_CENTER);
 
         // Bottom line: the last error, else how old the fix is.

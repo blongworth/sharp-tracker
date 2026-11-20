@@ -81,6 +81,38 @@ function formatsTimeToGo(logger as Test.Logger) as Boolean {
     return true;
 }
 
+// 10 nm to go at 10 kn from a fix at t=1000; the server's ETA is t=4600.
+(:debug)
+function underway(vmg) as Dictionary {
+    var m = {"etaEpoch" => 4600, "fixEpoch" => 1000, "distanceNm" => 10.0, "speedKn" => 10.0};
+    if (vmg != null) {
+        m["vmgKn"] = vmg;
+    }
+    return m;
+}
+
+(:test)
+function estimatesTtgFromVmg(logger as Test.Logger) as Boolean {
+    // At the fix: distance / speed, whatever the VMG.
+    Test.assertEqual(EtaModel.estimateTtg(underway(5.0), 1000), 3600);
+    // Straight at it (VMG = speed): one second per second, same as the ETA countdown.
+    Test.assertEqual(EtaModel.estimateTtg(underway(10.0), 1360), 3240);
+    Test.assertEqual(EtaModel.estimateTtg(underway(10.0), 1360), EtaModel.remainingSeconds(4600, 1360));
+    // 60 degrees off (VMG 5): 0.5 nm closer after 6 min, so 9.5 nm to go.
+    Test.assertEqual(EtaModel.estimateTtg(underway(5.0), 1360), 3420);
+    Test.assertEqual(EtaModel.formatDistance(EtaModel.estimateDistance(underway(5.0), 1360)), "9.5 nm");
+    // Heading away (VMG -10): 11 nm to go.
+    Test.assertEqual(EtaModel.estimateTtg(underway(-10.0), 1360), 3960);
+    // Past the target: due, distance 0.
+    Test.assertEqual(EtaModel.formatCountdown(EtaModel.estimateTtg(underway(10.0), 5000)), "due");
+    // No VMG (older server): count down from the server's ETA.
+    Test.assertEqual(EtaModel.estimateTtg(underway(null), 1360), 3240);
+    Test.assertEqual(EtaModel.estimateDistance(underway(null), 1360), 10.0);
+    // No ETA (stopped or no fix): unknown.
+    Test.assert(EtaModel.estimateTtg({"distanceNm" => 10.0}, 1360) == null);
+    return true;
+}
+
 (:test)
 function formatsDistance(logger as Test.Logger) as Boolean {
     Test.assertEqual(EtaModel.formatDistance(6.04), "6.0 nm");

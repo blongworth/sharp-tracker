@@ -197,6 +197,8 @@ unknown:
 - `target` and `reason` (why there's no target, e.g. `no station ahead`);
 - `distance_nm`, `bearing_deg`, `ttg_s`;
 - `eta` (ISO) and `eta_epoch`;
+- `vmg_kn`: speed made good toward the target at the fix (SOG × cos of the
+  angle between COG and the bearing; negative when moving away);
 - `speed_kn` and `speed_source` (`sog_30min` or `planned`);
 - `fix_time`, `fix_epoch`, `fix_age_s` and `stale`.
 
@@ -364,9 +366,11 @@ a smoke test on a real board before deploying.
 ## Garmin watch app (Connect IQ, Forerunner 165)
 
 `garmin/sharp_eta/` is a Connect IQ widget with a glance. It shows the target,
-TTG counting down every second, ETA (local), distance and fix age. Press
-SELECT to pick **Auto (ahead)** or a station (nearest first). The choice is
-kept on the watch.
+TTG, ETA (local), distance and fix age. Between fixes it re-estimates every
+second: the distance shrinks at the VMG from the last fix, and TTG is that
+distance at the speed basis, so off course it counts down slower than the
+clock and heading away it counts up. Press SELECT to pick **Auto (ahead)**
+or a station (nearest first). The choice is kept on the watch.
 
 **How it connects:** the watch has no internet of its own.
 `makeWebRequest` goes over Bluetooth to the Garmin Connect app on the paired

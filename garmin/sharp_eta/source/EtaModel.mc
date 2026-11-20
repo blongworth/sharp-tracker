@@ -33,6 +33,7 @@ module EtaModel {
         putIfSet(model, "fixEpoch", data["fix_epoch"]);
         putIfSet(model, "distanceNm", data["distance_nm"]);
         putIfSet(model, "speedKn", data["speed_kn"]);
+        putIfSet(model, "vmgKn", data["vmg_kn"]);
         return model;
     }
 
@@ -48,6 +49,43 @@ module EtaModel {
             return null;
         }
         return etaEpoch - nowEpoch;
+    }
+
+    // Distance to go now, dead-reckoned from the fix: the ship closes on the
+    // target at vmgKn (speed made good toward it at the fix), or moves away
+    // when that is negative. Without a VMG, the distance at the fix.
+    function estimateDistance(model as Dictionary?, nowEpoch) {
+        if (model == null || model["distanceNm"] == null) {
+            return null;
+        }
+        var dist = model["distanceNm"].toFloat();
+        var vmg = model["vmgKn"];
+        var fix = model["fixEpoch"];
+        if (vmg == null || fix == null || nowEpoch <= fix) {
+            return dist;
+        }
+        dist -= vmg.toFloat() * (nowEpoch - fix) / 3600.0;
+        return dist > 0 ? dist : 0.0;
+    }
+
+    // Seconds to go now: the dead-reckoned distance at the server's speed basis
+    // (planned speed or recent mean SOG). Steaming straight at the target
+    // (VMG = speed) this counts down one second per second; off course it
+    // counts down slower, and heading away it counts up. Without a VMG it
+    // counts down from the server's ETA as before.
+    function estimateTtg(model as Dictionary?, nowEpoch) {
+        if (model == null || model["etaEpoch"] == null) {
+            return null;
+        }
+        var speed = model["speedKn"];
+        if (model["vmgKn"] == null || speed == null || speed.toFloat() <= 0) {
+            return remainingSeconds(model["etaEpoch"], nowEpoch);
+        }
+        var dist = estimateDistance(model, nowEpoch);
+        if (dist == null) {
+            return remainingSeconds(model["etaEpoch"], nowEpoch);
+        }
+        return (dist / speed.toFloat() * 3600 + 0.5).toNumber();
     }
 
     // 4906 -> "1:22", 420 -> "0:07", <= 0 -> "due", null -> "--".
@@ -100,8 +138,8 @@ module EtaModel {
         if (model["name"] == null) {
             return model["reason"] != null ? model["reason"] : "No target";
         }
-        return model["name"] + " " + formatTtg(remainingSeconds(model["etaEpoch"], nowEpoch))
-            + " " + formatDistance(model["distanceNm"]);
+        return model["name"] + " " + formatTtg(estimateTtg(model, nowEpoch))
+            + " " + formatDistance(estimateDistance(model, nowEpoch));
     }
 
     // makeWebRequest response code -> short text for the screen.
