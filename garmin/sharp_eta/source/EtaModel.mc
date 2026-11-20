@@ -62,6 +62,19 @@ module EtaModel {
         return (minutes / 60).format("%d") + ":" + (minutes % 60).format("%02d");
     }
 
+    // Main-view countdown, to the second so it visibly ticks between fixes:
+    // 4906 -> "1:21:46", 0 or less -> "due", null -> "--".
+    function formatCountdown(seconds) {
+        if (seconds == null) {
+            return "--";
+        }
+        if (seconds <= 0) {
+            return "due";
+        }
+        return (seconds / 3600).format("%d") + ":" + (seconds / 60 % 60).format("%02d")
+            + ":" + (seconds % 60).format("%02d");
+    }
+
     // 6.04 -> "6.0 nm", 61.25 -> "61 nm", null -> "-- nm".
     function formatDistance(nm) {
         if (nm == null) {

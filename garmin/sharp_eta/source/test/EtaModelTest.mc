@@ -70,6 +70,12 @@ function formatsTimeToGo(logger as Test.Logger) as Boolean {
     Test.assertEqual(EtaModel.formatTtg(0), "due");
     Test.assertEqual(EtaModel.formatTtg(-5), "due");
     Test.assertEqual(EtaModel.formatTtg(null), "--");
+    Test.assertEqual(EtaModel.formatCountdown(4906), "1:21:46");
+    Test.assertEqual(EtaModel.formatCountdown(4905), "1:21:45");  // ticks each second
+    Test.assertEqual(EtaModel.formatCountdown(59), "0:00:59");
+    Test.assertEqual(EtaModel.formatCountdown(36000), "10:00:00");
+    Test.assertEqual(EtaModel.formatCountdown(0), "due");
+    Test.assertEqual(EtaModel.formatCountdown(null), "--");
     Test.assertEqual(EtaModel.remainingSeconds(1000, 400), 600);
     Test.assert(EtaModel.remainingSeconds(null, 400) == null);
     return true;
