@@ -10,8 +10,10 @@ wheels/
 .venv
 
 # Local data and secrets
-data/
+/data/
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 .env
 logs/
 firmware/pico_nmea_tracker/settings.toml

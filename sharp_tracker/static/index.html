@@ -6,6 +6,7 @@
 <title>SHARP Tracker — Live</title>
 <link href="/vendor/maplibre-gl.css" rel="stylesheet"/>
 <script src="/vendor/maplibre-gl.js"></script>
+<script src="/eta.js"></script>
 <style>
   html, body { margin: 0; height: 100%; font-family: -apple-system, system-ui, sans-serif; }
   #map { position: absolute; inset: 0; }
@@ -25,6 +26,8 @@
   #dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #999; }
   #dot.live { background: #16a34a; }
   #dot.stale { background: #dc2626; }
+  #hud input[type=number] { width: 4.5em; }
+  #eta-ttg { font-size: 15px; }
 </style>
 </head>
 <body>
@@ -43,13 +46,21 @@
   <div class="row"><label><input type="checkbox" id="seamarks" checked/> seamarks</label></div>
   <div class="row"><label><input type="checkbox" id="track" checked/> show ship track</label></div>
   <div class="row"><label><input type="checkbox" id="waypoints" checked/> show waypoints</label></div>
-  <div class="row"><label><input type="checkbox" id="wp_line" checked/> line to nearest waypoint</label></div>
+  <div class="row"><label><input type="checkbox" id="wp_line" checked/> line to target</label></div>
   <div class="row"><label><input type="checkbox" id="follow" checked/> follow ship</label></div>
   <hr style="border:none;border-top:1px solid #ddd;margin:8px 0"/>
   <div class="metric">Pos <span id="pos" style="font-size:11px">&mdash;</span></div>
   <div class="metric">SOG <span id="sog">&mdash;</span></div>
   <div class="metric">COG <span id="cog">&mdash;</span></div>
-  <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span></div>
+  <div class="metric">Fix <span id="fix" style="font-size:11px">&mdash;</span> <span id="fix-age" class="dim"></span></div>
+  <hr style="border:none;border-top:1px solid #ddd;margin:8px 0"/>
+  <div class="row"><select id="eta-target" title="Target for time to go (click a station; right-click or long-press the map for a point)"></select></div>
+  <div class="row dim"><label>planned speed <input type="number" id="eta-speed" min="0" max="50" step="0.5" placeholder="SOG"/> kn</label></div>
+  <div class="metric">Dist <span id="eta-dist">&mdash;</span></div>
+  <div class="metric">TTG <span id="eta-ttg">&mdash;</span></div>
+  <div class="metric">ETA <span id="eta-eta">&mdash;</span></div>
+  <div class="dim" id="eta-note"></div>
+  <div class="dim"><a href="/eta">time-to-go list</a></div>
   <div class="dim" id="last-updated"></div>
   <div class="dim" id="wp-hover" style="min-height:14px"></div>
 </div>
@@ -151,9 +162,12 @@ function styleFor(base, seamarks) {
 }
 
 let track = [];
+let lastTrackKey = null;  // fix last appended to `track` (see applyPosition)
 let ship = null;
 let waypoints = [];
-let nearestWp = null;
+let etaTarget = loadTarget();   // this browser's target (eta.js)
+let etaResult = null;           // last /api/eta response
+let targetPos = null;           // {lat, lon} of the resolved target, for the line and heading
 let lastPos = null;
 let replaying = false;      // true while the initial position batch loads
 let followTarget = null;    // last point the camera centered on
@@ -225,26 +239,13 @@ function trackGeoJSON() {
 function setWpTrack() {
   const src = map.getSource("wp_track");
   if (!src) return;
-  const show = document.getElementById("wp_line").checked && nearestWp && lastPos;
+  const show = document.getElementById("wp_line").checked && targetPos && lastPos;
   src.setData({
     type: "Feature", properties: {},
     geometry: show
-      ? { type: "LineString", coordinates: [[lastPos.lon, lastPos.lat], [nearestWp.lon, nearestWp.lat]] }
+      ? { type: "LineString", coordinates: [[lastPos.lon, lastPos.lat], [targetPos.lon, targetPos.lat]] }
       : { type: "LineString", coordinates: [] },
   });
-}
-
-// Planar nearest-neighbour, fine over the NES-LTER domain.
-function updateNearestWp(p) {
-  if (!waypoints.length) { nearestWp = null; return; }
-  let best = null, bestD = Infinity;
-  for (const w of waypoints) {
-    const dlat = (w.lat - p.lat) * 60;
-    const dlon = (w.lon - p.lon) * 60 * Math.cos(((w.lat + p.lat) / 2) * Math.PI / 180);
-    const d = dlat * dlat + dlon * dlon;
-    if (d < bestD) { bestD = d; best = w; }
-  }
-  nearestWp = best;
 }
 
 function bearingDeg(lat1, lon1, lat2, lon2) {
@@ -255,27 +256,139 @@ function bearingDeg(lat1, lon1, lat2, lon2) {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
-// COG when present, else direction toward the nearest waypoint when that layer is on.
+// COG when present, else direction toward the target when the target line is on.
 function currentHeading(p) {
   if (p.cog !== null && p.cog !== undefined && !Number.isNaN(p.cog)) return p.cog;
-  if (document.getElementById("wp_line").checked && nearestWp) {
-    return bearingDeg(p.lat, p.lon, nearestWp.lat, nearestWp.lon);
+  if (document.getElementById("wp_line").checked && targetPos) {
+    return bearingDeg(p.lat, p.lon, targetPos.lat, targetPos.lon);
   }
   return null;
 }
 
+// --- Time to go -----------------------------------------------------------
+// The server computes distance / TTG / ETA (/api/eta) so the map, the /eta
+// page, and the watch agree. Between fetches, distance / TTG / ETA are
+// dead-reckoned from the fix at its VMG toward the target (estimate()).
+
+function populateTargetSelect() {
+  const sel = document.getElementById("eta-target");
+  sel.innerHTML = "";
+  const add = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label; sel.appendChild(o);
+  };
+  add("auto", "Auto (station ahead)");
+  if (etaTarget.mode === "point") {
+    add("point", "Point " + etaTarget.lat.toFixed(4) + "\u00b0, " + etaTarget.lon.toFixed(4) + "\u00b0");
+  }
+  for (const w of waypoints) add("station:" + w.station, w.station + " (" + w.name + ")");
+  sel.value = etaTarget.mode === "station" ? "station:" + etaTarget.station : etaTarget.mode;
+}
+
+function setTarget(t) {
+  etaTarget = t;
+  saveTarget(t);
+  populateTargetSelect();
+  refreshEta();
+}
+
+function renderEta() {
+  const r = etaResult;
+  const set = (id, text) => { document.getElementById(id).textContent = text; };
+  if (!r) { set("eta-dist", "\u2014"); set("eta-ttg", "\u2014"); set("eta-eta", "\u2014"); return; }
+  const e = estimate(r.distance_nm, r.vmg_kn, r.speed_kn, r.fix_epoch, r.eta_epoch);
+  set("eta-dist", fmtNm(e.distance));
+  set("eta-ttg", fmtTtg(e.ttg));
+  set("eta-eta", fmtEtaUtc(e.etaEpoch));
+  set("eta-note", [targetLabel(r), fmtEtaLocal(e.etaEpoch), speedLabel(r)].filter(Boolean).join(" \u00b7 "));
+}
+setInterval(renderEta, 5000);
+
+async function refreshEta() {
+  try {
+    const res = await fetch(etaUrl(etaTarget, loadSpeed()));
+    if (res.status === 404 && etaTarget.mode === "station") {
+      setTarget({ mode: "auto" });  // station no longer in the list
+      return;
+    }
+    etaResult = res.ok ? await res.json() : null;
+    if (!res.ok) document.getElementById("eta-note").textContent = "ETA unavailable (HTTP " + res.status + ")";
+  } catch (e) {
+    etaResult = null;
+    document.getElementById("eta-note").textContent = "ETA unavailable";
+  }
+  targetPos = etaResult && etaResult.target ? { lat: etaResult.target.lat, lon: etaResult.target.lon } : null;
+  renderEta();
+  setWpTrack();
+  if (lastPos) rotateShip(currentHeading(lastPos));
+}
+
+function bindTargetPicking() {
+  // Click a station dot: target it.
+  map.on("click", "wp_dots", (e) => {
+    if (e.features.length) setTarget({ mode: "station", station: e.features[0].properties.station });
+  });
+  map.on("mouseenter", "wp_dots", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "wp_dots", () => { map.getCanvas().style.cursor = ""; });
+  // Right-click, or long-press on touch screens: target that point.
+  const pointAt = (lngLat) => setTarget({ mode: "point", lat: lngLat.lat, lon: lngLat.lng, name: "Point" });
+  map.on("contextmenu", (e) => pointAt(e.lngLat));
+  let pressTimer = null;
+  map.on("touchstart", (e) => {
+    clearTimeout(pressTimer);
+    if (e.originalEvent.touches.length === 1) pressTimer = setTimeout(() => pointAt(e.lngLat), 700);
+  });
+  for (const ev of ["touchend", "touchmove", "touchcancel"]) map.on(ev, () => clearTimeout(pressTimer));
+}
+
+// Freshness: the SSE stream re-sends the latest stored fix every few seconds,
+// so a live connection alone doesn't mean data is arriving. Go red when the
+// newest fix is older than staleAfterS (collector, GPS, or link down). The
+// server sends the threshold (STALE_AFTER_SECONDS) with each message.
+let staleAfterS = 180;
+let lastFixMs = null;
+let sseState = "connecting";  // connecting | open | error
+
+function ago(s) {
+  if (s < 90) return Math.round(s) + " s ago";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return (s / 3600).toFixed(1) + " h ago";
+  return Math.round(s / 86400) + " d ago";
+}
+
+function updateFreshness() {
+  const dot = document.getElementById("dot");
+  const status = document.getElementById("status");
+  const age = lastFixMs === null ? null : Math.max(0, (Date.now() - lastFixMs) / 1000);
+  document.getElementById("fix-age").textContent = age === null ? "" : "(" + ago(age) + ")";
+  if (sseState === "connecting") {
+    dot.className = ""; status.textContent = "connecting…";
+  } else if (sseState === "error") {
+    dot.className = "stale"; status.textContent = "reconnecting…";
+  } else if (age === null) {
+    dot.className = ""; status.textContent = "waiting for first fix";
+  } else if (age > staleAfterS) {
+    dot.className = "stale"; status.textContent = "no new fix for " + ago(age).replace(" ago", "");
+  } else {
+    dot.className = "live"; status.textContent = "live";
+  }
+}
+setInterval(updateFreshness, 5000);
+
 function applyPosition(p) {
   lastPos = p;
+  if (typeof p.stale_after === "number") staleAfterS = p.stale_after;
   document.getElementById("pos").textContent = fmt(p.lat, "°, ", 4) + fmt(p.lon, "°", 4);
   document.getElementById("sog").textContent = fmt(p.sog, " kn", 1);
   document.getElementById("cog").textContent = fmt(p.cog, "\u00b0", 0);
   if (p.t) {
     const d = new Date(p.t);
     document.getElementById("fix").textContent = d.toISOString().slice(5, 19) + " UTC";
+    lastFixMs = d.getTime();
+    updateFreshness();
   }
   document.getElementById("last-updated").textContent = "updated " + new Date().toLocaleTimeString();
 
-  updateNearestWp(p);
   rotateShip(currentHeading(p));
   if (!ship) {
     ship = new maplibregl.Marker({ element: shipEl, anchor: "center" }).setLngLat([p.lon, p.lat]).addTo(map);
@@ -283,9 +396,16 @@ function applyPosition(p) {
     ship.setLngLat([p.lon, p.lat]);
   }
   followShip(p);
-  track.push([p.lon, p.lat]);
-  if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
-  map.getSource("track").setData(trackGeoJSON());
+  // The SSE stream re-sends the latest stored fix every refresh, and its first
+  // message repeats the last point of the initial window: only extend the
+  // track with a fix that isn't already its last point.
+  const fixKey = p.t + "|" + p.lon + "|" + p.lat;
+  if (fixKey !== lastTrackKey) {
+    lastTrackKey = fixKey;
+    track.push([p.lon, p.lat]);
+    if (track.length > TRACK_LIMIT) track = track.slice(-TRACK_LIMIT);
+    map.getSource("track").setData(trackGeoJSON());
+  }
   setWpTrack();
 }
 
@@ -316,9 +436,6 @@ function applyLayerVisibility() {
 }
 
 map.on("load", async () => {
-  const dot = document.getElementById("dot");
-  const status = document.getElementById("status");
-
   try {
     const wps = await (await fetch("/api/waypoints")).json();
     if (Array.isArray(wps)) {
@@ -326,6 +443,8 @@ map.on("load", async () => {
       map.getSource("waypoints").setData(waypointsGeoJSON());
     }
   } catch (e) { console.warn("waypoints unavailable", e); }
+  populateTargetSelect();
+  bindTargetPicking();
 
   try {
     const res = await fetch("/api/positions?window_hours=168");
@@ -355,14 +474,16 @@ map.on("load", async () => {
 
   bindHover();
   applyLayerVisibility();
+  refreshEta();
 
   const es = new EventSource("/track");
-  es.onopen = () => { dot.className = "live"; status.textContent = "live"; };
-  es.onerror = () => { dot.className = "stale"; status.textContent = "reconnecting\u2026"; };
+  es.onopen = () => { sseState = "open"; updateFreshness(); };
+  es.onerror = () => { sseState = "error"; updateFreshness(); };
   es.onmessage = (e) => {
-    dot.className = "live";
-    status.textContent = "live";
+    sseState = "open";
     try { applyPosition(JSON.parse(e.data)); } catch (err) { console.warn("bad message", err); }
+    updateFreshness();
+    refreshEta();
   };
 });
 
@@ -386,6 +507,14 @@ document.getElementById("wp_line").addEventListener("change", () => {
   setWpTrack();
   if (lastPos) rotateShip(currentHeading(lastPos));
 });
+document.getElementById("eta-target").addEventListener("change", (e) => {
+  const v = e.target.value;
+  if (v === "auto") setTarget({ mode: "auto" });
+  else if (v.startsWith("station:")) setTarget({ mode: "station", station: v.slice(8) });
+});
+const speedInput = document.getElementById("eta-speed");
+speedInput.value = loadSpeed() || "";
+speedInput.addEventListener("change", () => { saveSpeed(parseFloat(speedInput.value)); refreshEta(); });
 document.getElementById("follow").addEventListener("change", (e) => {
   if (e.target.checked && lastPos) followShip(lastPos);
 });

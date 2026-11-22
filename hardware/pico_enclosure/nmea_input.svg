@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 830 340" width="830" height="340" font-family="Helvetica, Arial, sans-serif" font-size="12">
+  <title>Opto-isolated NMEA 0183 input for the Pico W</title>
+  <rect width="830" height="340" fill="#fff"/>
+  <g stroke="#222" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- DB9 -->
+    <rect x="20" y="90" width="90" height="160" rx="6"/>
+    <!-- pin 2 line, R1, to node N1 -->
+    <path d="M110 120 H140 M200 120 H300"/>
+    <rect x="140" y="112" width="60" height="16"/>
+    <!-- pin 5 line to H11L1 pin 2 -->
+    <path d="M110 230 H300"/>
+    <!-- D1: anode at bottom (pin 5 side), cathode at top (pin 2 side) -->
+    <path d="M250 120 V165 M250 195 V230"/>
+    <path d="M238 195 L262 195 L250 167 Z"/>
+    <path d="M238 165 H262"/>
+    <!-- H11L1 -->
+    <rect x="300" y="90" width="170" height="170" rx="4"/>
+    <path d="M300 120 H330 V160 M330 185 V230 H300"/>
+    <path d="M318 160 L342 160 L330 184 Z"/>
+    <path d="M318 185 H342"/>
+    <path d="M345 166 L365 160 M345 178 L365 172"/>
+    <path d="M360 157 L366 160 L361 164 M360 169 L366 172 L361 176"/>
+    <path d="M392 150 L392 200 L428 175 Z"/>
+    <circle cx="432" cy="175" r="4"/>
+    <path d="M436 175 H470 M415 162 V110 H470 M415 188 V240 H470"/>
+    <path d="M378 95 V255" stroke-dasharray="5 4" stroke="#888"/>
+    <!-- Pico side: 3V3 rail, C1, R2, output, GND -->
+    <path d="M470 110 H520 V60 H690"/>
+    <path d="M550 60 V80 M538 80 H562 M538 88 H562 M550 88 V104"/>
+    <path d="M540 104 H560 M544 109 H556 M548 114 H552"/>
+    <path d="M630 60 V95 M630 145 V175"/>
+    <rect x="622" y="95" width="16" height="50"/>
+    <path d="M470 175 H690"/>
+    <path d="M470 240 H690"/>
+    <!-- Pico -->
+    <rect x="690" y="40" width="120" height="230" rx="6"/>
+  </g>
+  <g fill="#222">
+    <circle cx="250" cy="120" r="3.2"/>
+    <circle cx="250" cy="230" r="3.2"/>
+    <circle cx="550" cy="60" r="3.2"/>
+    <circle cx="630" cy="60" r="3.2"/>
+    <circle cx="630" cy="175" r="3.2"/>
+  </g>
+  <g fill="#222">
+    <text x="65" y="80" text-anchor="middle" font-weight="bold">J1 DB9 (male)</text>
+    <text x="65" y="160" text-anchor="middle">GPS NMEA in</text>
+    <text x="28" y="124">pin 2</text>
+    <text x="28" y="234">pin 5</text>
+    <text x="115" y="108" font-size="10">A (+) / TxD</text>
+    <text x="115" y="250" font-size="10">B (−) / signal GND</text>
+    <text x="170" y="146" text-anchor="middle">R1 390 Ω ½ W</text>
+    <text x="198" y="186" text-anchor="middle">D1</text>
+    <text x="198" y="200" text-anchor="middle" font-size="10">1N4148</text>
+    <text x="385" y="82" text-anchor="middle" font-weight="bold">U1 H11L1</text>
+    <text x="304" y="114" font-size="10">1</text>
+    <text x="304" y="226" font-size="10">2</text>
+    <text x="459" y="105" font-size="10">6</text>
+    <text x="459" y="170" font-size="10">4</text>
+    <text x="459" y="236" font-size="10">5</text>
+    <text x="381" y="272" font-size="10" fill="#666">isolation barrier</text>
+    <text x="482" y="104" font-size="10">VCC</text>
+    <text x="482" y="169" font-size="10">Vo</text>
+    <text x="482" y="234" font-size="10">GND</text>
+    <text x="568" y="88">C1 100 nF</text>
+    <text x="640" y="124">R2 4.7 kΩ</text>
+    <text x="575" y="52">3V3</text>
+    <text x="750" y="30" text-anchor="middle" font-weight="bold">Pico W</text>
+    <text x="698" y="64">3V3(OUT) 36</text>
+    <text x="698" y="179">GP1 RX 2</text>
+    <text x="698" y="244">GND 3</text>
+    <text x="20" y="300" font-size="11">Idle / mark (RS-422 A &lt; B, RS-232 negative): LED off, so GP1 is pulled high (UART idle). Start and 0 bits light the LED and pull GP1 low.</text>
+    <text x="20" y="318" font-size="11">D1 clamps the LED's reverse voltage to about 0.7 V. DB9 pin 5 is NOT connected to Pico GND; the GPS side stays isolated.</text>
+  </g>
+</svg>

@@ -62,7 +62,12 @@ def _extract_position(msg: Any, raw: str, received_at: datetime | None) -> dict 
 
     lat = getattr(msg, "latitude", None)
     lon = getattr(msg, "longitude", None)
-    if lat is None or lon is None or lat == 0 or lon == 0:
+    if lat is None or lon is None or (lat == 0 and lon == 0):
+        return None
+    # Reject receiver-flagged invalid fixes: RMC status V, GGA quality 0.
+    if getattr(msg, "status", "A") != "A":
+        return None
+    if getattr(msg, "sentence_type", None) == "GGA" and _int_or_none(getattr(msg, "gps_qual", None)) == 0:
         return None
 
     return {
